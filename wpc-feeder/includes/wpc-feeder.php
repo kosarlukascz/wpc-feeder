@@ -34,6 +34,10 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			return WPCFeedStatics::get_instance();
 		}
 
+		public function write() {
+			return WPCWriter::get_instance();
+		}
+
 		public function __construct() {
 
 			register_activation_hook( __FILE__, array( $this, 'activation' ) );
@@ -66,6 +70,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		}
 
 		public function process_generation( $assoc_args ) {
+			wp_suspend_cache_addition( true );
 
 			$uploadDir = wp_upload_dir();
 			$targetDir = $uploadDir['basedir'] . $this->reldir_files_uploads;
@@ -83,18 +88,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				unlink( $tempFilePath );
 				WP_CLI::log( 'File ' . $tempFilePath . ' deleted.' );
 			}
-			$xmlWriter = new XMLWriter();
-			$xmlWriter->openURI( $tempFilePath );
-			$xmlWriter->startDocument( '1.0', 'UTF-8' );
-			$xmlWriter->setIndent( true );
-			$xmlWriter->startElement( 'rss' ); // Začátek kořenového elementu <rss>
-			$xmlWriter->writeAttribute( 'xmlns:g', 'http://base.google.com/ns/1.0' );
-			$xmlWriter->writeAttribute( 'version', '2.0' );
-
-
-			$xmlWriter->startElement( 'channel' );    // Element <channel>
-
-			//make progressbar
+			$this->save_data_to_file( $tempFilePath, $this->write()->startDocument(), 'w' );
 
 			$offset     = $this->offset;
 			$chunkSize  = $this->chunk_size;
@@ -107,67 +101,58 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				if ( empty( $products ) ) {
 					break;
 				}
-				gc_enable();
 
-
-				$xmlWriter->openMemory();
+				$data = '';
 				foreach ( $products as $product_id ) {
 
-					$product_object = wc_get_product( $product_id );
-					if ( ! $this->check_product_consistention( $product_object ) ) {
+					$product = wc_get_product( $product_id );
+					if ( ! $this->check_product_consistention( $product ) ) {
 						continue;
 					}
 
 
-					if ( $product_object->is_type( 'variable' ) ) {
-						$this->process_variable_product( $product_object, $xmlWriter, 'variable', $assoc_args );
+					if ( $product->is_type( 'variable' ) ) {
+						$data .= $this->process_variable_product( $product, 'variable', $assoc_args );
 					} else {
-						$this->process_simple_product( $product_object, $xmlWriter, 'simple', $assoc_args );
+						$data .= $this->process_simple_product( $product, 'simple', $assoc_args );
 					}
 
 					$progress->tick();
 
-					$product_object = null;
-					$product_id     = null;
-					unset( $product_object );
-					unset( $product_id );
+					$product = '';
 
 				}
-				$data = $xmlWriter->outputMemory();
 				$this->save_data_to_file( $tempFilePath, $data );
-				$data = null;
-				unset( $data );
-				$xmlWriter->flush(true);
+				$data = '';
 
-				gc_collect_cycles();
 
-				$products = null;
-				unset( $products );
+				$products = '';
 				$progress->finish();
 				$offset += $chunkSize;
 				$chunkCount ++;
 
 				$usage = $this->helper()->getSystemUsage();
+				wp_reset_postdata();
 				WP_CLI::log( 'Využití paměti: ' . $usage['memory_usage_formatted'] );
 				WP_CLI::log( 'Využití CPU: ' . $usage['cpu_usage_formatted'] );
 			} while ( true );  // Loop will exit when no products are loaded
 
 
-			$xmlWriter->endElement(); // </channel>
-			$xmlWriter->endElement(); // </rss>
-
-			$xmlWriter->endDocument();
-			$xmlWriter->flush();
+			$end = $this->write()->endDocument();
+			$this->save_data_to_file( $tempFilePath, $end );
 
 			if ( file_exists( $finalFilePath ) ) {
 				unlink( $finalFilePath );
 			}
 			rename( $tempFilePath, $finalFilePath );
+			wp_suspend_cache_addition( false );
+
 			WP_CLI::success( 'XML feed generated.' );
 		}
 
-		public function save_data_to_file( $file, $data ) {
-			if ( $handle = fopen( $file, 'a' ) ) {
+
+		public function save_data_to_file( $file, $data, $mode = 'a' ) {
+			if ( $handle = fopen( $file, $mode ) ) {
 				// Přidej XML do souboru
 				fwrite( $handle, $data );
 				// Uzavři soubor
@@ -199,41 +184,47 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			return true;
 		}
 
-		public function process_variable_product( $product, $xmlWriter, $type, $assoc_args ) {
+		public function process_variable_product( $product, $type, $assoc_args ) {
+			$data     = '';
 			$parentID = $product->get_id();
-			$this->process_variable_product_parent( $product, $parentID, $xmlWriter, 'variable', $assoc_args );
-			$this->process_variable_product_variants( $product, $parentID, $xmlWriter, $type, $assoc_args );
+			$data     .= $this->process_variable_product_parent( $product, $parentID, 'variable', $assoc_args );
+			$data     .= $this->process_variable_product_variants( $product, $parentID, $type, $assoc_args );
+
+			return $data;
 		}
 
-		public function process_variable_product_parent( $product, $parentID, $xmlWriter, $type, $assoc_args ) {
-			$xmlWriter->startElement( 'item' ); //začatek item
+		public function process_variable_product_parent( $product, $parentID, $type, $assoc_args ) {
+			$data = '<item>' . PHP_EOL;
 
 
-			$xmlWriter->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
-			$xmlWriter->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
-			$xmlWriter->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-			$xmlWriter->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
-			$xmlWriter->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
-			$this->helper()->wpcPriceWriter( $xmlWriter, $product, $type );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-			$this->helper()->wpcAddtionalImages( $xmlWriter, $product, $type );
-			$xmlWriter->writeElement( 'g:item_group_id', $parentID );
+			$data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
+			$data .= $this->write()->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
+			$data .= $this->helper()->wpcPriceWriter( $product, $type );
+			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
+			$data .= $this->helper()->wpcAddtionalImages( $product, $type );
+			$data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
 
 
-			$xmlWriter->endElement(); //konec item
-			$variation = null;
-			unset( $variation );
+			$data      .= '</item>' . PHP_EOL;
+			$variation = '';
+			$product   = '';
+
+			return $data;
 		}
 
-		public function process_variable_product_variants( $product, $parentID, $xmlWriter, $type, $assoc_args ) {
+		public function process_variable_product_variants( $product, $parentID, $type, $assoc_args ) {
+			$data       = '';
 			$variations = $product->get_children( array(
 				'posts_per_page' => - 1,
 				'numberposts'    => - 1,
@@ -244,65 +235,70 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 					continue;
 				}
 
-				$xmlWriter->startElement( 'item' ); //začatek item
+				$data .= '<item>' . PHP_EOL;
 
-				$xmlWriter->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
-				$this->helper()->wpcWriterCData( $xmlWriter, 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
-				$this->helper()->wpcWriterCData( $xmlWriter, 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
-				$xmlWriter->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
-				$xmlWriter->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-				$xmlWriter->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-				$xmlWriter->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-				$xmlWriter->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-				$xmlWriter->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-				$xmlWriter->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-				$xmlWriter->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
-				$xmlWriter->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
-				$this->helper()->wpcPriceWriter( $xmlWriter, $product, $type );
-				$this->helper()->wpcWriterCData( $xmlWriter, 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
-				$this->helper()->wpcWriterCData( $xmlWriter, 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-				$this->helper()->wpcAddtionalImages( $xmlWriter, $product, $type );
-				$this->helper()->wpcGender( $xmlWriter, $product, $type );
-				$this->helper()->wpcColor( $xmlWriter, $product, $type );
-				$this->helper()->wpcSize( $xmlWriter, $product, $type );
-				$xmlWriter->writeElement( 'g:item_group_id', $parentID );
+				$data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
+				$data .= $this->write()->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+				$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
+				$data .= $this->helper()->wpcPriceWriter( $product, $type );
+				$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
+				$data .= $this->helper()->wpcAddtionalImages( $product, $type );
+				$data .= $this->helper()->wpcGender( $product, $type );
+				$data .= $this->helper()->wpcColor( $product, $type );
+				$data .= $this->helper()->wpcSize( $product, $type );
+				$data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
 
 
-				$xmlWriter->endElement(); //konec item
-				$variation = null;
-				unset( $variation );
+				$data      .= '</item>' . PHP_EOL;
+				$variation = '';
+				$product   = '';
 			}
+			$variations = '';
+
+			return $data;
 		}
 
-		public function process_simple_product( $product, $xmlWriter, $type, $assoc_args ) {
-			$xmlWriter->startElement( 'item' ); //začatek item
+		public function process_simple_product( $product, $type, $assoc_args ) {
+			$data = '<item>' . PHP_EOL;
+
+			$data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
+			$data .= $this->write()->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+			$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
+			$data .= $this->helper()->wpcPriceWriter( $product, 'simple' );
+			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
+			$data .= $this->helper()->wpcAddtionalImages( $product, 'simple' );
+			$data .= $this->helper()->wpcGender( $product, 'simple' );
+			$data .= $this->write()->writeElement( 'g:item_group_id', $this->utilites()->wpc_get_item_group_id( $product, $type ) );
 
 
-			$xmlWriter->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
-			$xmlWriter->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
-			$xmlWriter->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-			$xmlWriter->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-			$xmlWriter->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
-			$xmlWriter->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
-			$this->helper()->wpcPriceWriter( $xmlWriter, $product, 'simple' );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
-			$this->helper()->wpcWriterCData( $xmlWriter, 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-			$this->helper()->wpcAddtionalImages( $xmlWriter, $product, 'simple' );
-			$this->helper()->wpcGender( $xmlWriter, $product, 'simple' );
-			$xmlWriter->writeElement( 'g:item_group_id', $this->utilites()->wpc_get_item_group_id( $product, $type ) );
+			$data .= '</item>' . PHP_EOL;
 
-
-			$xmlWriter->endElement(); //konec item
+			return $data;
 		}
 
 
 		public function load_products( $generate, $offset, $limit ) {
+			$args = array();
 			if ( $generate == 'zero' ) {
 				$args = array(
 					'post_type'      => 'product',
@@ -356,20 +352,9 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			}
 
 
-			$products = get_posts( $args );
-
-
-			return $products;
+			return get_posts( $args );
 		}
 
-
-		public
-		function activation() {
-			if ( ! extension_loaded( 'xmlwriter' ) ) {
-				exit( 'Please install xmlwriter extension for PHP on your server . ' );
-			}
-			$this->create_dir();
-		}
 
 		public
 		function create_dir() {
