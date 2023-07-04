@@ -2,6 +2,37 @@
 
 if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
+	class WPCWriter {
+		private static $instance; //singleton instance
+		private $prefix = 'WPCWriter';
+
+		public static function get_instance() {
+			if ( self::$instance === null ) {
+				self::$instance = new self;
+			}
+
+			return self::$instance;
+		}
+
+		public function startDocument() {
+			return '<?xml version="1.0" encoding="UTF-8"?>' . PHP_EOL .
+			       '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">' . PHP_EOL .
+			       '<channel>' . PHP_EOL;
+		}
+
+		public function endDocument() {
+			return '</channel>' . PHP_EOL . '</rss>';
+		}
+
+		public function writeElement( $name, $data ) {
+			return '<' . $name . '>' . $data . '</' . $name . '>' . PHP_EOL;
+		}
+
+		public function writeCdataElement( $name, $data ) {
+			return '<' . $name . '><![CDATA[' . $data . ']]></' . $name . '>' . PHP_EOL;
+		}
+	}
+
 	class WPCFeederUtilites {
 		private static $instance; //singleton instance
 		private $prefix = 'WPCFeederUtilites';
@@ -101,16 +132,21 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			return $main_img;
 		}
 
-		public function wpc_get_price( $product, $type ) {
-			if ( ! empty( $product->get_sale_price() ) ) {
-				$xml .= '<g:price>' . $this->dsb_round( $product->get_regular_price() ) . ' ' . $currency_symbol . '</g:price>' . PHP_EOL;
-				$xml .= '<g:sale_price>' . $this->dsb_round( $product->get_sale_price() ) . ' ' . $currency_symbol . '</g:sale_price>' . PHP_EOL;
-			} else {
-				$xml .= '<g:price>' . $this->dsb_round( $product->get_price() ) . ' ' . $currency_symbol . '</g:price>' . PHP_EOL;
-			}
-		}
+
 	}
 
+	class WPCWCGetter {
+		private static $instance; //singleton instance
+		private $prefix = 'WPCWCGetter';
+
+		public static function get_instance() {
+			if ( self::$instance === null ) {
+				self::$instance = new self;
+			}
+
+			return self::$instance;
+		}
+	}
 	class WPCFeederHelper {
 		private static $instance; //singleton instance
 		private $prefix = 'WPCFeederHelper';
@@ -129,20 +165,22 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			$xmlWriter->endElement();
 		}
 
-		public function wpcPriceWriter( $xmlWriter, $product, $type ) {
+		public function wpcPriceWriter( $product, $type ) {
 			$currency_symbol = get_option( 'woocommerce_currency' );
-
+			$data            = '';
 			if ( $type == 'simple' ) {
 				if ( ! empty( $product->get_sale_price() ) ) {
-					$xmlWriter->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price() ) . ' ' . $currency_symbol );
-					$xmlWriter->writeElement( 'g:sale_price', $this->wpc_price_round( $product->get_sale_price() ) . ' ' . $currency_symbol );
+					$data .= WPCWriter::get_instance()->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price() ) . ' ' . $currency_symbol );
+					$data .= WPCWriter::get_instance()->writeElement( 'g:sale_price', $this->wpc_price_round( $product->get_sale_price() ) . ' ' . $currency_symbol );
 				} else {
-					$xmlWriter->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price() ) . ' ' . $currency_symbol );
+					$data .= WPCWriter::get_instance()->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price() ) . ' ' . $currency_symbol );
 				}
 			}
+
+			return $data;
 		}
 
-		public function wpcGender( $xmlWriter, $product, $type ) {
+		public function wpcGender( $product, $type ) {
 			$gender = '';
 			$string = strtolower( $product->get_name() );
 			//male, female, unisex
@@ -162,23 +200,24 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 				$gender = 'unisex';
 			}
 			if ( $gender ) {
-				$xmlWriter->writeElement( 'g:gender', $gender );
+				return WPCWriter::get_instance()->writeElement( 'g:gender', $gender );
 			}
 		}
 
-		public function wpcColor( $xmlWriter, $product, $type ) {
+		public function wpcColor( $product, $type ) {
 			/*TODO: do */
 			return '';
 		}
 
-		public function wpcSize( $xmlWriter, $product, $type ) {
+		public function wpcSize( $product, $type ) {
 			/*TODO: do */
 			return '';
 		}
 
-		public function wpcAddtionalImages( $xmlWriter, $product, $type ) {
+		public function wpcAddtionalImages( $product, $type ) {
 			$limit  = 1;
 			$images = $product->get_gallery_image_ids();
+			$data   = '';
 			if ( $images ) {
 				foreach ( $images as $image ) {
 					if ( $limit >= 10 ) {
@@ -186,10 +225,13 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 					}
 					$img_link = wp_get_attachment_image_src( $image, 'full' )[0];
 					if ( $img_link ) {
-						$this->wpcWriterCdata( $xmlWriter, 'g:additional_image_link', ( $img_link ) );
+						$data .= WPCWriter::get_instance()->writeCdataElement(  'g:additional_image_link', ( $img_link ) );
 					}
 					$limit ++;
 				}
+			}
+			if ( $data ) {
+				return $data;
 			}
 		}
 
