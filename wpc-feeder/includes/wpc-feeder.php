@@ -9,6 +9,9 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		private static $instance; //singleton instance
 		private $prefix = 'WPCFeeder';
 		private $reldir_files_uploads = '/wpc-feeder/';
+		private $reldir_chunk_folder = '/wpc-feeder/chunks/';
+		private $chunk_size = 1000;
+		private $offset = 0;
 
 		public static function get_instance() {
 			if ( self::$instance === null ) {
@@ -54,15 +57,15 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			if ( $assoc_args['generate'] !== 'one' && $assoc_args['generate'] !== 'zero' && $assoc_args['generate'] !== 'all' ) {
 				WP_CLI::error( 'Please use --generate=one or --generate=zero or --generate=all' );
 			}
-			$start = microtime( true );
-			WP_CLI::success( 'Initiation succesful. Loading products...' );
-			$products = $this->load_products( $assoc_args['generate'] );
-			$end      = microtime( true );
-			WP_CLI::success( 'Products loaded. I found ' . count( $products ) . ' products by given criteria in ' . round( ( $end - $start ), 2 ) . ' seconds.' );
-			$this->process_generation( $products, $assoc_args );
+			//	$start = microtime( true );
+			//	WP_CLI::success( 'Initiation succesful. Loading products...' );
+			//	$products = $this->load_products( $assoc_args['generate'] );
+			//	$end      = microtime( true );
+			//	WP_CLI::success( 'Products loaded. I found ' . count( $products ) . ' products by given criteria in ' . round( ( $end - $start ), 2 ) . ' seconds.' );
+			$this->process_generation( $assoc_args );
 		}
 
-		public function process_generation( $products, $assoc_args ) {
+		public function process_generation( $assoc_args ) {
 
 			$uploadDir = wp_upload_dir();
 			$targetDir = $uploadDir['basedir'] . $this->reldir_files_uploads;
@@ -71,6 +74,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				wp_mkdir_p( $targetDir );
 				WP_CLI::log( 'Directory ' . $targetDir . ' created.' );
 			}
+
 
 			$tempFilePath  = $targetDir . $assoc_args['generate'] . '-temp.xml';
 			$finalFilePath = $targetDir . $assoc_args['generate'] . '.xml';
@@ -91,33 +95,63 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			$xmlWriter->startElement( 'channel' );    // Element <channel>
 
 			//make progressbar
-			$progress = \WP_CLI\Utils\make_progress_bar( 'Generating XML feed', count( $products ) );
-			$usage    = $this->helper()->getSystemUsage();
-			WP_CLI::log( 'Využití paměti: ' . $usage['memory_usage_formatted'] );
-			WP_CLI::log( 'Využití CPU: ' . $usage['cpu_usage_formatted'] );
-			gc_enable();
-			foreach ( $products as $product_id ) {
 
-				$product_object = wc_get_product( $product_id );
-				if ( ! $this->check_product_consistention( $product_object ) ) {
-					continue;
+			$offset     = $this->offset;
+			$chunkSize  = $this->chunk_size;
+			$chunkCount = 0;
+			do {
+				$products = $this->load_products( $assoc_args['generate'], $offset, $chunkSize );
+				$progress = \WP_CLI\Utils\make_progress_bar( 'Generating XML feed ', count( $products ) );
+				WP_CLI::log( 'Chunk: ' . $chunkCount );
+
+				if ( empty( $products ) ) {
+					break;
 				}
+				gc_enable();
 
 
-				if ( $product_object->is_type( 'variable' ) ) {
-					$this->process_variable_product( $product_object, $xmlWriter, 'variable', $assoc_args );
-				} else {
-					$this->process_simple_product( $product_object, $xmlWriter, 'simple', $assoc_args );
+				$xmlWriter->openMemory();
+				foreach ( $products as $product_id ) {
+
+					$product_object = wc_get_product( $product_id );
+					if ( ! $this->check_product_consistention( $product_object ) ) {
+						continue;
+					}
+
+
+					if ( $product_object->is_type( 'variable' ) ) {
+						$this->process_variable_product( $product_object, $xmlWriter, 'variable', $assoc_args );
+					} else {
+						$this->process_simple_product( $product_object, $xmlWriter, 'simple', $assoc_args );
+					}
+
+					$progress->tick();
+
+					$product_object = null;
+					$product_id     = null;
+					unset( $product_object );
+					unset( $product_id );
+
 				}
+				$data = $xmlWriter->outputMemory();
+				$this->save_data_to_file( $tempFilePath, $data );
+				$data = null;
+				unset( $data );
+				$xmlWriter->flush(true);
 
-				$progress->tick();
-
-				$product_object = null;
-				$product_id     = null;
-				unset( $product_object );
-				unset( $product_id );
 				gc_collect_cycles();
-			}
+
+				$products = null;
+				unset( $products );
+				$progress->finish();
+				$offset += $chunkSize;
+				$chunkCount ++;
+
+				$usage = $this->helper()->getSystemUsage();
+				WP_CLI::log( 'Využití paměti: ' . $usage['memory_usage_formatted'] );
+				WP_CLI::log( 'Využití CPU: ' . $usage['cpu_usage_formatted'] );
+			} while ( true );  // Loop will exit when no products are loaded
+
 
 			$xmlWriter->endElement(); // </channel>
 			$xmlWriter->endElement(); // </rss>
@@ -129,8 +163,19 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				unlink( $finalFilePath );
 			}
 			rename( $tempFilePath, $finalFilePath );
-			$progress->finish();
 			WP_CLI::success( 'XML feed generated.' );
+		}
+
+		public function save_data_to_file( $file, $data ) {
+			if ( $handle = fopen( $file, 'a' ) ) {
+				// Přidej XML do souboru
+				fwrite( $handle, $data );
+				// Uzavři soubor
+				fclose( $handle );
+				WP_CLI::log( 'XML byl úspěšně přidán do souboru ' );
+			} else {
+				WP_CLI::log( 'Nepodařilo se otevřít soubor ' );
+			}
 		}
 
 		public function check_product_consistention( $product ) {
@@ -257,15 +302,13 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		}
 
 
-		public
-		function load_products(
-			$generate
-		) {
+		public function load_products( $generate, $offset, $limit ) {
 			if ( $generate == 'zero' ) {
 				$args = array(
 					'post_type'      => 'product',
-					'posts_per_page' => - 1,
 					'post_status'    => 'publish',
+					'offset'         => $offset,
+					'posts_per_page' => $limit,
 					'meta_query'     => array(
 						'relation' => ' or ',
 						array(
@@ -283,10 +326,12 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 
 				);
 			}
+
 			if ( $generate == 'all' ) {
 				$args = array(
 					'post_type'      => 'product',
-					'posts_per_page' => - 1,
+					'offset'         => $offset,
+					'posts_per_page' => $limit,
 					'post_status'    => 'publish',
 					'fields'         => 'ids'
 
@@ -295,7 +340,8 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			if ( $generate == 'one' ) {
 				$args = array(
 					'post_type'      => 'product',
-					'posts_per_page' => - 1,
+					'offset'         => $offset,
+					'posts_per_page' => $limit,
 					'post_status'    => 'publish',
 					//meta total sales > 0
 					'meta_query'     => array(
@@ -310,8 +356,10 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			}
 
 
-			return get_posts( $args );
+			$products = get_posts( $args );
 
+
+			return $products;
 		}
 
 
