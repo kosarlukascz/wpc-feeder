@@ -46,10 +46,23 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 		}
 
 		public function wpc_get_name( $product, $type ) {
-			$name = $product->get_name();
 
-			return $name;
+			if ( $type == 'variant' ) {
+				$explode          = explode( ' - ', $product->get_name() );
+				$name             = $explode[0];
+				$title_attributes = WPCFeederHelper::get_instance()->process_variant_name( $product );
+				if ( $title_attributes ) {
+					return $name .= ' - ' . $title_attributes;
+				} else {
+					return $name;
+
+				}
+			} else {
+				return $product->get_name();
+			}
+
 		}
+
 
 		public function wpc_get_description( $product, $type ) {
 			$desc = $product->get_description();
@@ -69,34 +82,191 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 		}
 
 		public function wpc_get_custom_label_0( $product, $type ) {
-			/*TODO: add custom label data*/
-			return '';
+			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+			/**
+			 * Returning number of sales for wholetime
+			 * 0 sale
+			 * 1 sale
+			 * 2 and more sales
+			 */
+			$sales = get_post_meta( $id, 'total_sales', true );
+
+			if ( empty( $sales ) ) {
+				$sales = '0 sales';
+			} elseif ( $sales == 1 ) {
+				$sales = '1 sale';
+			} else {
+				$sales = '2 and more sales';
+			}
+
+			return $sales;
 		}
 
+
 		public function wpc_get_custom_label_1( $product, $type ) {
-			/*TODO: add custom label data*/
-			return '';
+			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+			/***
+			 * Returning number of sales for last 30 days
+			 * 0
+			 * 1
+			 * 2
+			 * 3
+			 * 5
+			 * 6
+			 * 7
+			 * 8
+			 * 9
+			 * 10
+			 * 10-20
+			 * 20-50
+			 * 50-100
+			 * 100-200
+			 * 200-500
+			 * 500-1000
+			 * 1000+
+			 */
+			$sales = WPCFeederHelper::get_instance()->get_sales_for_product_id( $id, 30 );
+			if ( $sales == 0 ) {
+				return '0';
+			} elseif ( $sales == 1 ) {
+				return '1';
+			} elseif ( $sales == 2 ) {
+				return '2';
+			} elseif ( $sales == 3 ) {
+				return '3';
+			} elseif ( $sales == 5 ) {
+				return '5';
+			} elseif ( $sales == 6 ) {
+				return '6';
+			} elseif ( $sales == 7 ) {
+				return '7';
+			} elseif ( $sales == 8 ) {
+				return '8';
+			} elseif ( $sales == 9 ) {
+				return '9';
+			} elseif ( $sales == 10 ) {
+				return '10';
+			} elseif ( $sales >= 11 && $sales <= 20 ) {
+				return '10-20';
+			} elseif ( $sales >= 21 && $sales <= 50 ) {
+				return '20-50';
+			} elseif ( $sales >= 51 && $sales <= 100 ) {
+				return '50-100';
+			} elseif ( $sales >= 101 && $sales <= 200 ) {
+				return '100-200';
+			} elseif ( $sales >= 201 && $sales <= 500 ) {
+				return '200-500';
+			} elseif ( $sales >= 501 && $sales <= 1000 ) {
+				return '500-1000';
+			} else {
+				return '1000+';
+			}
+
 		}
 
 		public function wpc_get_custom_label_2( $product, $type ) {
-			/*TODO: add custom label data*/
-			return '';
+			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+			/***
+			 * Returning number of sales for last 30 days
+			 * 0
+			 * 1
+			 * 2
+			 * 3
+			 * 5
+			 * 6
+			 * 7
+			 * 8
+			 * 9
+			 * 10
+			 * 10-20
+			 * 20-50
+			 * 50-100
+			 * 100-200
+			 * 200-500
+			 * 500-1000
+			 * 1000+
+			 */
+			$sales = WPCFeederHelper::get_instance()->get_sales_for_product_id( $id, 60 );
+			if ( $sales == 0 ) {
+				return '0';
+			} elseif ( $sales == 1 ) {
+				return '1';
+			} elseif ( $sales == 2 ) {
+				return '2';
+			} elseif ( $sales == 3 ) {
+				return '3';
+			} elseif ( $sales == 5 ) {
+				return '5';
+			} elseif ( $sales == 6 ) {
+				return '6';
+			} elseif ( $sales == 7 ) {
+				return '7';
+			} elseif ( $sales == 8 ) {
+				return '8';
+			} elseif ( $sales == 9 ) {
+				return '9';
+			} elseif ( $sales == 10 ) {
+				return '10';
+			} elseif ( $sales >= 11 && $sales <= 20 ) {
+				return '10-20';
+			} elseif ( $sales >= 21 && $sales <= 50 ) {
+				return '20-50';
+			} elseif ( $sales >= 51 && $sales <= 100 ) {
+				return '50-100';
+			} elseif ( $sales >= 101 && $sales <= 200 ) {
+				return '100-200';
+			} elseif ( $sales >= 201 && $sales <= 500 ) {
+				return '200-500';
+			} elseif ( $sales >= 501 && $sales <= 1000 ) {
+				return '500-1000';
+			} else {
+				return '1000+';
+			}
+
 		}
 
 		public function wpc_get_custom_label_3( $product, $type ) {
-			/*TODO: add custom label data*/
-			return '';
+			/**
+			 * Returning publishing date of product (mm-yyyy)
+			 */
+
+			return $product->get_date_created() > date( 'm-Y' );
 		}
 
 		public function wpc_get_custom_label_4( $product, $type ) {
-			/*TODO: add custom label data*/
-			return '';
+			/**
+			 * Returning last date of product sale
+			 * <1 day
+			 * <2 days
+			 * <3 days
+			 * <4 days
+			 * <5 days
+			 * <6 days
+			 * <1 week
+			 * <2 week
+			 * <3 week
+			 * <1 month
+			 * <2 month
+			 * <3 month
+			 * <4 month
+			 * <5 month
+			 * <6 month
+			 * <7 month
+			 * <8 month
+			 * <9 month
+			 * <10 month
+			 * <11 month
+			 * <1 year
+			 * <2 year
+			 * <3 year
+			 * <4 year
+			 */
+			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+
+			return WPCFeederHelper::get_instance()->transform_date_to_label( WPCFeederHelper::get_instance()->get_last_order_date_by_product_id( $id ) );
+
 		}
 
-		public function wpc_get_gender( $product, $type ) {
-			/*TODO: add gender*/
-			return '';
-		}
 
 		public function wpc_get_availability( $product, $type ) {
 			return 'in stock';
@@ -147,6 +317,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			return self::$instance;
 		}
 	}
+
 	class WPCFeederHelper {
 		private static $instance; //singleton instance
 		private $prefix = 'WPCFeederHelper';
@@ -159,11 +330,89 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			return self::$instance;
 		}
 
+		public function transform_date_to_label( $date ) {
+
+			//if date is empty or null
+			if ( empty( $date ) || is_null( $date ) ) {
+				return 'never sold';
+			}
+			$today      = date( 'Y-m-d H:i:s' );
+			$difference = strtotime( $today ) - strtotime( $date );
+
+			if ( $difference < 60 ) {
+				return "<1 minute";
+			} elseif ( $difference < 3600 ) {
+				$minutes = floor( $difference / 60 );
+
+				return "<$minutes minutes";
+			} elseif ( $difference < 86400 ) {
+				$hours = floor( $difference / 3600 );
+
+				return "<$hours hours";
+			} elseif ( $difference < 604800 ) {
+				$days = floor( $difference / 86400 );
+
+				return "<$days days";
+			} elseif ( $difference < 2592000 ) {
+				$weeks = floor( $difference / 604800 );
+
+				return "<$weeks weeks";
+			} elseif ( $difference < 31536000 ) {
+				$months = floor( $difference / 2592000 );
+
+				return "<$months months";
+			} else {
+				$years = floor( $difference / 31536000 );
+
+				return "<$years years";
+			}
+		}
+
+
 		public function wpcWriterCdata( $xmlWriter, $name, $data ) {
 			$xmlWriter->startElement( $name );
 			$xmlWriter->writeCData( $data );
 			$xmlWriter->endElement();
 		}
+
+		public function get_sales_for_product_id( $id, $days ) {
+			global $wpdb;
+
+			$query = $wpdb->prepare( "
+        SELECT COUNT(DISTINCT oi.order_item_id) AS pocet_prodeju
+        FROM {$wpdb->posts} AS p
+        JOIN {$wpdb->prefix}woocommerce_order_items AS oi ON p.ID = oi.order_id
+        JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim ON oi.order_item_id = oim.order_item_id
+        WHERE p.post_type = 'shop_order'
+        AND p.post_status IN ('wc-completed', 'wc-processing')
+        AND oim.meta_key IN ('_product_id', '_variation_id')
+        AND oim.meta_value = %d
+        AND p.post_date >= DATE_SUB(NOW(), INTERVAL %d DAY)
+    ", $id, $days );
+
+			$result = $wpdb->get_var( $query );
+
+			return $result;
+		}
+
+		public function get_last_order_date_by_product_id( $id ) {
+			global $wpdb;
+
+			$query = $wpdb->prepare( "
+        SELECT MAX(p.post_date)
+        FROM {$wpdb->prefix}posts p
+        JOIN {$wpdb->prefix}woocommerce_order_items oi ON p.ID = oi.order_id
+        JOIN {$wpdb->prefix}woocommerce_order_itemmeta oim ON oi.order_item_id = oim.order_item_id
+        WHERE p.post_type = 'shop_order'
+        AND p.post_status = 'wc-completed'
+        AND oi.order_item_type = 'line_item'
+        AND oim.meta_key = '_product_id'
+        AND oim.meta_value = %d
+    ", $id );
+
+			return $wpdb->get_var( $query );
+		}
+
 
 		public function wpcPriceWriter( $product, $type ) {
 			$currency_symbol = get_option( 'woocommerce_currency' );
@@ -180,41 +429,104 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			return $data;
 		}
 
-		public function wpcGender( $product, $type ) {
+		public function wpc_get_gender( $product, $type ) {
 			$gender = '';
 			$string = strtolower( $product->get_name() );
-			//male, female, unisex
-			if ( strpos( $string, 'pánsk' ) !== false ) {
-				$gender = 'male';
-			} elseif ( strpos( $string, 'muž' ) !== false ) {
-				$gender = 'male';
-			} elseif ( strpos( $string, 'chlap' ) !== false ) {
-				$gender = 'male';
-			} elseif ( strpos( $string, 'dáms' ) !== false ) {
-				$gender = 'female';
-			} elseif ( strpos( $string, 'žens' ) !== false ) {
-				$gender = 'female';
-			} elseif ( strpos( $string, 'dívč' ) !== false ) {
-				$gender = 'female';
-			} else {
-				$gender = 'unisex';
+
+			$genderMappings = [
+				'pánsk' => 'male',
+				'muž'   => 'male',
+				'chlap' => 'male',
+				'dáms'  => 'female',
+				'žens'  => 'female',
+				'dívč'  => 'female',
+			];
+
+			foreach ( $genderMappings as $pattern => $mappedGender ) {
+				if ( strpos( $string, $pattern ) !== false ) {
+					$gender = $mappedGender;
+					break;
+				}
 			}
+
 			if ( $gender ) {
 				return WPCWriter::get_instance()->writeElement( 'g:gender', $gender );
 			}
 		}
 
-		public function wpcColor( $product, $type ) {
-			/*TODO: do */
-			return '';
+
+		public function process_variant_name( $product ) {
+			$static     = WPCFeedStatics::get_instance();
+			$to_return  = array();
+			$attributes = $product->get_attributes();
+
+			//COLOR
+			$color_keys = $static->possible_attributes_color();
+			$attributes = $product->get_attributes();
+			foreach ( $attributes as $key => $value ) {
+				if ( preg_match( "/(" . $color_keys . ")/", $key ) ) {
+					{
+						$to_return[] = $static->color_translate( trim( strtolower( $value ) ) );
+					}
+
+				}
+			}
+
+			//SIZE
+			$size_keys  = WPCFeedStatics::get_instance()->possible_attributes_sizes();
+			$attributes = $product->get_attributes();
+			foreach ( $attributes as $key => $value ) {
+				if ( preg_match( "/(" . $size_keys . ")/", $key ) ) {
+					{
+						$to_return[] = 'velikost ' . strtoupper( $static->size_translate( trim( strtolower( $value ) ) ) );
+					}
+
+				}
+			}
+			if ( ! empty( $to_return ) ) {
+				//if is more than 1 element in array
+				if ( count( $to_return ) > 1 ) {
+					return implode( ', ', $to_return );
+				} else {
+					return $to_return[0];
+				}
+
+			}
+
+			return false;
 		}
 
-		public function wpcSize( $product, $type ) {
-			/*TODO: do */
-			return '';
+		public function wpc_get_color( $product, $type ) {
+			$color_keys = WPCFeedStatics::get_instance()->possible_attributes_color();
+			$attributes = $product->get_attributes();
+			foreach ( $attributes as $key => $value ) {
+				if ( preg_match( "/(" . $color_keys . ")/", $key ) ) {
+					{
+						return WPCWriter::get_instance()->writeElement( 'g:color', WPCFeedStatics::get_instance()->color_translate( trim( strtolower( $value ) ) ) );
+					}
+
+				}
+			}
+
+			return false;
 		}
 
-		public function wpcAddtionalImages( $product, $type ) {
+		public function wpc_get_size( $product, $type ) {
+			$size_keys  = WPCFeedStatics::get_instance()->possible_attributes_sizes();
+			$attributes = $product->get_attributes();
+			foreach ( $attributes as $key => $value ) {
+				if ( preg_match( "/(" . $size_keys . ")/", $key ) ) {
+					{
+						return WPCWriter::get_instance()->writeElement( 'g:size', strtoupper( WPCFeedStatics::get_instance()->size_translate( trim( strtolower( $value ) ) ) ) );
+					}
+
+				}
+			}
+
+			return false;
+		}
+
+		public function wpc_get_additional_images( $product, $type ) {
 			$limit  = 1;
 			$images = $product->get_gallery_image_ids();
 			$data   = '';
@@ -225,7 +537,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 					}
 					$img_link = wp_get_attachment_image_src( $image, 'full' )[0];
 					if ( $img_link ) {
-						$data .= WPCWriter::get_instance()->writeCdataElement(  'g:additional_image_link', ( $img_link ) );
+						$data .= WPCWriter::get_instance()->writeCdataElement( 'g:additional_image_link', ( $img_link ) );
 					}
 					$limit ++;
 				}
