@@ -2,7 +2,7 @@
 
 **WP Google Merchant Center Feeder**  is a WordPress plugin that generates product feeds for Google Merchant Center. It allows you to easily sync your WooCommerce products with Google Merchant Center to promote your products through Google Shopping Ads. Plugin use data from your WooCommerce 3.1+ store.
 ## Installation 
-1. Download the plugin zip file from the [WordPress Plugin Repository](https://wordpress.org/plugins/wp-google-merchant-center-feeder/) .
+1. Download the plugin.
 2. Log in to your WordPress admin dashboard.
 3. Navigate to "Plugins" → "Add New".
 4. Click on the "Upload Plugin" button at the top of the page.
@@ -47,7 +47,7 @@ wp wpc-feeder --generate=one
 This command will generate feeds for products that have more than zero sales.
 ## Contributing
 
-Contributions are welcome! If you encounter any issues or have suggestions for improvements, please open an issue on the [plugin's GitHub repository](https://github.com/your-repo) .
+Contributions are welcome! If you encounter any issues or have suggestions for improvements, please open an issue on the [plugin's GitHub repository](https://github.com/kosarlukascz/wpc-feeder) .
 ## License
 
 This plugin is released under the [GNU General Public License v2 or later](https://www.gnu.org/licenses/gpl-2.0.html) .
