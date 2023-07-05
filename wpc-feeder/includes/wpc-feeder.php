@@ -10,7 +10,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		private $prefix = 'WPCFeeder';
 		private $reldir_files_uploads = '/wpc-feeder/';
 		private $reldir_chunk_folder = '/wpc-feeder/chunks/';
-		private $chunk_size = 1000;
+		private $chunk_size = 100;
 		private $offset = 0;
 
 		public static function get_instance() {
@@ -61,11 +61,6 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			if ( $assoc_args['generate'] !== 'one' && $assoc_args['generate'] !== 'zero' && $assoc_args['generate'] !== 'all' ) {
 				WP_CLI::error( 'Please use --generate=one or --generate=zero or --generate=all' );
 			}
-			//	$start = microtime( true );
-			//	WP_CLI::success( 'Initiation succesful. Loading products...' );
-			//	$products = $this->load_products( $assoc_args['generate'] );
-			//	$end      = microtime( true );
-			//	WP_CLI::success( 'Products loaded. I found ' . count( $products ) . ' products by given criteria in ' . round( ( $end - $start ), 2 ) . ' seconds.' );
 			$this->process_generation( $assoc_args );
 		}
 
@@ -89,20 +84,27 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				WP_CLI::log( 'File ' . $tempFilePath . ' deleted.' );
 			}
 			$this->save_data_to_file( $tempFilePath, $this->write()->startDocument(), 'w' );
+			$count_for_loaded    = $this->get_count_of_products( $assoc_args['generate'] );
+			$offset              = $this->offset;
+			$chunkSize           = $this->chunk_size;
+			$chunkCount          = 0;
+			$probbablyChunkCount = ceil( $count_for_loaded / $chunkSize );
+			WP_CLI::log( 'Chunk size is set to ' . $chunkSize . ' products.' );
+			WP_CLI::success( 'I found ' . $count_for_loaded . ' products. I will generate ' . $probbablyChunkCount . ' chunks.' );
 
-			$offset     = $this->offset;
-			$chunkSize  = $this->chunk_size;
-			$chunkCount = 0;
 			do {
 				$products = $this->load_products( $assoc_args['generate'], $offset, $chunkSize );
 				$progress = \WP_CLI\Utils\make_progress_bar( 'Generating XML feed ', count( $products ) );
-				WP_CLI::log( 'Chunk: ' . $chunkCount );
+				WP_CLI::log( 'Chunk: ' . $chunkCount . ' / ' . $probbablyChunkCount );
 
 				if ( empty( $products ) ) {
 					break;
 				}
 
 				$data = '';
+				//start messuring time of foreach loop
+				$start = microtime( true );
+
 				foreach ( $products as $product_id ) {
 
 					$product = wc_get_product( $product_id );
@@ -120,8 +122,10 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 					$progress->tick();
 
 					$product = '';
-
 				}
+				//end messuring time of foreach loop
+				$end = microtime( true );
+				WP_CLI::log( 'Chunk generated in ' . round( ( $end - $start ), 2 ) . ' seconds.' );
 				$this->save_data_to_file( $tempFilePath, $data );
 				$data = '';
 
@@ -138,8 +142,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			} while ( true );  // Loop will exit when no products are loaded
 
 
-			$end = $this->write()->endDocument();
-			$this->save_data_to_file( $tempFilePath, $end );
+			$this->save_data_to_file( $tempFilePath, $this->write()->endDocument() );
 
 			if ( file_exists( $finalFilePath ) ) {
 				unlink( $finalFilePath );
@@ -157,9 +160,9 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				fwrite( $handle, $data );
 				// Uzavři soubor
 				fclose( $handle );
-				WP_CLI::log( 'XML byl úspěšně přidán do souboru ' );
+				WP_CLI::log( 'Data byla zapsána do XML' );
 			} else {
-				WP_CLI::log( 'Nepodařilo se otevřít soubor ' );
+				WP_CLI::error( 'Nepodařilo se otevřít soubor XML: ' . $file );
 			}
 		}
 
@@ -212,7 +215,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			$data .= $this->helper()->wpcPriceWriter( $product, $type );
 			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
 			$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-			$data .= $this->helper()->wpcAddtionalImages( $product, $type );
+			$data .= $this->helper()->wpc_get_additional_images( $product, $type );
 			$data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
 
 
@@ -238,7 +241,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				$data .= '<item>' . PHP_EOL;
 
 				$data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, 'variant' ) );
 				$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
 				$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
 				$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
@@ -252,10 +255,10 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				$data .= $this->helper()->wpcPriceWriter( $product, $type );
 				$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
 				$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-				$data .= $this->helper()->wpcAddtionalImages( $product, $type );
-				$data .= $this->helper()->wpcGender( $product, $type );
-				$data .= $this->helper()->wpcColor( $product, $type );
-				$data .= $this->helper()->wpcSize( $product, $type );
+				$data .= $this->helper()->wpc_get_additional_images( $product, $type );
+				$data .= $this->helper()->wpc_get_gender( $product, $type );
+				$data .= ( $color = $this->helper()->wpc_get_color( $product, $type ) ) !== false ? $color : '';
+				$data .= ( $size = $this->helper()->wpc_get_size( $product, $type ) ) !== false ? $size : '';
 				$data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
 
 
@@ -286,8 +289,8 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			$data .= $this->helper()->wpcPriceWriter( $product, 'simple' );
 			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
 			$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-			$data .= $this->helper()->wpcAddtionalImages( $product, 'simple' );
-			$data .= $this->helper()->wpcGender( $product, 'simple' );
+			$data .= $this->helper()->wpc_get_additional_images( $product, 'simple' );
+			$data .= $this->helper()->wpc_get_gender( $product, 'simple' );
 			$data .= $this->write()->writeElement( 'g:item_group_id', $this->utilites()->wpc_get_item_group_id( $product, $type ) );
 
 
@@ -298,63 +301,73 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 
 
 		public function load_products( $generate, $offset, $limit ) {
-			$args = array();
+			$args = array(
+				'post_type'      => 'product',
+				'offset'         => $offset,
+				'posts_per_page' => $limit,
+				'post_status'    => 'publish',
+				'fields'         => 'ids'
+			);
+
 			if ( $generate == 'zero' ) {
-				$args = array(
-					'post_type'      => 'product',
-					'post_status'    => 'publish',
-					'offset'         => $offset,
-					'posts_per_page' => $limit,
-					'meta_query'     => array(
-						'relation' => ' or ',
-						array(
-							'key'     => 'total_sales',
-							'value'   => '',
-							'compare' => 'NOT EXISTS'
-						),
-						array(
-							'key'     => 'total_sales',
-							'value'   => '0',
-							'compare' => ' = '
-						)
+				$args['meta_query'] = array(
+					'relation' => 'OR',
+					array(
+						'key'     => 'total_sales',
+						'compare' => 'NOT EXISTS'
 					),
-					'fields'         => 'ids'
-
+					array(
+						'key'     => 'total_sales',
+						'value'   => '0',
+						'compare' => '='
+					)
+				);
+			} elseif ( $generate == 'one' ) {
+				$args['meta_query'] = array(
+					array(
+						'key'     => 'total_sales',
+						'value'   => '0',
+						'compare' => '>'
+					)
 				);
 			}
-
-			if ( $generate == 'all' ) {
-				$args = array(
-					'post_type'      => 'product',
-					'offset'         => $offset,
-					'posts_per_page' => $limit,
-					'post_status'    => 'publish',
-					'fields'         => 'ids'
-
-				);
-			}
-			if ( $generate == 'one' ) {
-				$args = array(
-					'post_type'      => 'product',
-					'offset'         => $offset,
-					'posts_per_page' => $limit,
-					'post_status'    => 'publish',
-					//meta total sales > 0
-					'meta_query'     => array(
-						array(
-							'key'     => 'total_sales',
-							'value'   => '0',
-							'compare' => ' > '
-						)
-					),
-					'fields'         => 'ids'
-				);
-			}
-
 
 			return get_posts( $args );
 		}
 
+		public function get_count_of_products( $generate ) {
+			$args = array(
+				'post_type'      => 'product',
+				'posts_per_page' => '-1',
+				'post_status'    => 'publish',
+				'fields'         => 'ids'
+			);
+
+			if ( $generate == 'zero' ) {
+				$args['meta_query'] = array(
+					'relation' => 'OR',
+					array(
+						'key'     => 'total_sales',
+						'compare' => 'NOT EXISTS'
+					),
+					array(
+						'key'     => 'total_sales',
+						'value'   => '0',
+						'compare' => '='
+					)
+				);
+			} elseif ( $generate == 'one' ) {
+				$args['meta_query'] = array(
+					array(
+						'key'     => 'total_sales',
+						'value'   => '0',
+						'compare' => '>'
+					)
+				);
+			}
+
+			return count( get_posts( $args ) );
+		}
 
 		public
 		function create_dir() {
