@@ -1,6 +1,6 @@
 # WP Google Merchant Center Feeder
 
-**WP Google Merchant Center Feeder**  is a WordPress plugin that generates product feeds for Google Merchant Center. It allows you to easily sync your WooCommerce products with Google Merchant Center to promote your products through Google Shopping Ads.
+**WP Google Merchant Center Feeder**  is a WordPress plugin that generates product feeds for Google Merchant Center. It allows you to easily sync your WooCommerce products with Google Merchant Center to promote your products through Google Shopping Ads. Plugin use data from your WooCommerce 3.1+ store.
 ## Installation 
 1. Download the plugin zip file from the [WordPress Plugin Repository](https://wordpress.org/plugins/wp-google-merchant-center-feeder/) .
 2. Log in to your WordPress admin dashboard.
