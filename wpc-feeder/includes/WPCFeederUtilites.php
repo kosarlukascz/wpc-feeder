@@ -50,11 +50,14 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			if ( $type == 'variant' ) {
 				$explode          = explode( ' - ', $product->get_name() );
 				$name             = $explode[0];
-				$title_attributes = WPCFeederHelper::get_instance()->process_variant_name( $product );
+				$title_attributes = WPCFeederHelper::get_instance()->clean_string( WPCFeederHelper::get_instance()->process_variant_name( $product ) );
 				if ( $title_attributes ) {
 					return $name .= ' - ' . $title_attributes;
 				} else {
-					return $name;
+					$attributes = $product->get_attributes();
+
+
+					return $name .= ' - ' . WPCFeederHelper::get_instance()->clean_string( str_replace( '-', ' ', implode( ',', $attributes ) ) );
 
 				}
 			} else {
@@ -82,6 +85,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 		}
 
 		public function wpc_get_custom_label_0( $product, $type ) {
+
 			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
 			/**
 			 * Returning number of sales for wholetime
@@ -125,7 +129,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			 * 500-1000
 			 * 1000+
 			 */
-			$sales = WPCFeederHelper::get_instance()->get_sales_for_product_id( $id, 30 );
+			$sales = get_post_meta( $id, 'wpc-feeder-sales-30', true );
 			if ( $sales == 0 ) {
 				return '0';
 			} elseif ( $sales == 1 ) {
@@ -165,6 +169,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 		}
 
 		public function wpc_get_custom_label_2( $product, $type ) {
+
 			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
 			/***
 			 * Returning number of sales for last 30 days
@@ -186,7 +191,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			 * 500-1000
 			 * 1000+
 			 */
-			$sales = WPCFeederHelper::get_instance()->get_sales_for_product_id( $id, 60 );
+			$sales = get_post_meta( $id, 'wpc-feeder-sales-60', true );
 			if ( $sales == 0 ) {
 				return '0';
 			} elseif ( $sales == 1 ) {
@@ -226,11 +231,12 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 		}
 
 		public function wpc_get_custom_label_3( $product, $type ) {
+
 			/**
 			 * Returning publishing date of product (mm-yyyy)
 			 */
 
-			return $product->get_date_created() > date( 'm-Y' );
+			return $product->get_date_created()->date( 'm-Y' );
 		}
 
 		public function wpc_get_custom_label_4( $product, $type ) {
@@ -301,8 +307,6 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
 			return $main_img;
 		}
-
-
 	}
 
 	class WPCWCGetter {
@@ -328,6 +332,53 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			}
 
 			return self::$instance;
+		}
+
+		public function clean_string( $title ) {
+			$title = str_replace( 'CM', 'cm', $title );
+			$title = str_replace( 'MM', 'mm', $title );
+			$title = str_replace( '-X-', ' x ', $title );
+			$title = str_replace( '-cm', ' cm', $title );
+			$title = str_replace( 'cm', ' cm', $title );
+			$title = str_replace( 'pcs', 'ks', $title );
+			$title = str_replace( 'pc', 'ks', $title );
+			$title = str_replace( 'for', 'pro', $title );
+			$title = str_replace( 'months', 'měsíců', $title );
+
+			$title = str_replace( '  ', ' ', $title );
+
+			return $this->process_string( $title );
+
+		}
+
+		public function process_string( $input ) {
+			$words           = explode( ' ', $input );
+			$processed_words = array();
+			foreach ( $words as $word ) {
+				$original_word = $word;
+				if ( strpos( $word, '-' ) !== false ) {
+					$temp_words = explode( '-', $word );
+
+					$temp_words_edited = array();
+					foreach ( $temp_words as $temp_word ) {
+						$temp = str_replace( ',', '', $temp_word );
+
+						$temp                = WPCFeedStatics::get_instance()->color_translate( $temp );
+						$temp                = WPCFeedStatics::get_instance()->size_translate( $temp );
+						$temp_words_edited[] = $temp;
+					}
+					$word = implode( '-', $temp_words_edited ) . ',';
+				}
+				$word              = WPCFeedStatics::get_instance()->color_translate( $word );
+				$word              = WPCFeedStatics::get_instance()->size_translate( $word );
+				$processed_words[] = $word;
+			}
+			if ( str_ends_with( $processed_words[ count( $processed_words ) - 1 ], ',' ) ) {
+				$processed_words[ count( $processed_words ) - 1 ] = substr( $processed_words[ count( $processed_words ) - 1 ], 0, - 1 );
+			}
+
+			return implode( ' ', $processed_words );
+
 		}
 
 		public function transform_date_to_label( $date ) {
@@ -384,7 +435,6 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
         JOIN {$wpdb->prefix}woocommerce_order_items AS oi ON p.ID = oi.order_id
         JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim ON oi.order_item_id = oim.order_item_id
         WHERE p.post_type = 'shop_order'
-        AND p.post_status IN ('wc-completed', 'wc-processing')
         AND oim.meta_key IN ('_product_id', '_variation_id')
         AND oim.meta_value = %d
         AND p.post_date >= DATE_SUB(NOW(), INTERVAL %d DAY)
@@ -404,7 +454,6 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
         JOIN {$wpdb->prefix}woocommerce_order_items oi ON p.ID = oi.order_id
         JOIN {$wpdb->prefix}woocommerce_order_itemmeta oim ON oi.order_item_id = oim.order_item_id
         WHERE p.post_type = 'shop_order'
-        AND p.post_status = 'wc-completed'
         AND oi.order_item_type = 'line_item'
         AND oim.meta_key = '_product_id'
         AND oim.meta_value = %d
@@ -459,41 +508,41 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			$static     = WPCFeedStatics::get_instance();
 			$to_return  = array();
 			$attributes = $product->get_attributes();
-
 			//COLOR
 			$color_keys = $static->possible_attributes_color();
-			$attributes = $product->get_attributes();
 			foreach ( $attributes as $key => $value ) {
 				if ( preg_match( "/(" . $color_keys . ")/", $key ) ) {
 					{
+
+
 						$to_return[] = $static->color_translate( trim( strtolower( $value ) ) );
+						unset( $attributes[ $key ] );
 					}
 
 				}
 			}
 
 			//SIZE
-			$size_keys  = WPCFeedStatics::get_instance()->possible_attributes_sizes();
-			$attributes = $product->get_attributes();
+			$size_keys = $static->possible_attributes_sizes();
 			foreach ( $attributes as $key => $value ) {
 				if ( preg_match( "/(" . $size_keys . ")/", $key ) ) {
 					{
 						$to_return[] = 'velikost ' . strtoupper( $static->size_translate( trim( strtolower( $value ) ) ) );
+						unset( $attributes[ $key ] );
+
 					}
 
 				}
 			}
 			if ( ! empty( $to_return ) ) {
 				//if is more than 1 element in array
-				if ( count( $to_return ) > 1 ) {
-					return implode( ', ', $to_return );
-				} else {
-					return $to_return[0];
-				}
+				$all = array_merge( $to_return, $attributes );
+
+				return implode( ', ', $all );
 
 			}
 
-			return false;
+			return implode( ', ', $attributes );
 		}
 
 		public function wpc_get_color( $product, $type ) {
