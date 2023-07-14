@@ -10,7 +10,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		private $prefix = 'WPCFeeder';
 		private $reldir_files_uploads = '/wpc-feeder/';
 		private $reldir_chunk_folder = '/wpc-feeder/chunks/';
-		private $chunk_size = 100;
+		private $chunk_size = 50;
 		private $offset = 0;
 
 		public static function get_instance() {
@@ -42,12 +42,64 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 
 			register_activation_hook( __FILE__, array( $this, 'activation' ) );
 			//if defined CLI
-			add_action( 'init', array( $this, 'init' ) );
-
+			add_action( 'rest_api_init', array( $this, 'register_routes' ) );
 			if ( defined( 'WP_CLI' ) && WP_CLI ) {
 				WP_CLI::add_command( 'wpc-feeder', array( $this, 'wpcfeeder_main' ) );
+				WP_CLI::add_command( 'wpc-feeder-meta', array( $this, 'wpcfeeder_meta' ) );
+
 			}
 
+		}
+
+		public function register_routes() {
+			register_rest_route( '/wpcfeeder/v1', '/check/(?P<id>\d+)', array(
+				'methods'  => 'GET',
+				'callback' => array( $this, 'generate' ),
+			) );
+		}
+
+		public function generate( $request ) {
+			$id         = $request['id'];
+			$product    = wc_get_product( $id );
+			$assoc_args = array();
+			ob_start();
+			$data = $this->write()->startDocument();
+			if ( $product->is_type( 'variable' ) ) {
+				$data .= $this->process_variable_product( $product, 'variable', $assoc_args );
+			} else {
+				$data .= $this->process_simple_product( $product, 'simple', $assoc_args );
+			}
+			$data .= $this->write()->endDocument();
+			ob_end_clean();
+			echo $data;
+			exit;
+		}
+
+		public function wpcfeeder_meta( $args, $assoc_args ) {
+			WP_CLI::log( 'Starting to recalculate meta sales' );
+			$products = get_posts( array(
+				'post_type'      => 'product',
+				'post_status'    => 'any',
+				'posts_per_page' => - 1,
+				'fields'         => 'ids',
+			) );
+			WP_CLI::log( 'Found ' . count( $products ) . ' products' );
+			$progress = \WP_CLI\Utils\make_progress_bar( 'Recalculating sales ', count( $products ) );
+			foreach ( $products as $product_id ) {
+
+				if ( $assoc_args['force'] !== 'true' ) {
+					if ( get_post_meta( $product_id, 'wpc-feeder-sales-30', true ) !== '' ) {
+						$progress->tick();
+						continue;
+					}
+				}
+
+				update_post_meta( $product_id, 'wpc-feeder-sales-30', WPCFeederHelper::get_instance()->get_sales_for_product_id( $product_id, 30 ) );
+				update_post_meta( $product_id, 'wpc-feeder-sales-60', WPCFeederHelper::get_instance()->get_sales_for_product_id( $product_id, 60 ) );
+				$progress->tick();
+			}
+			$progress->finish();
+			WP_CLI::success( 'Recalculating sales finished' );
 		}
 
 		public function init() {
@@ -84,16 +136,16 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				WP_CLI::log( 'File ' . $tempFilePath . ' deleted.' );
 			}
 			$this->save_data_to_file( $tempFilePath, $this->write()->startDocument(), 'w' );
-			$count_for_loaded    = $this->get_count_of_products( $assoc_args['generate'] );
+			$count_for_loaded    = $this->get_count_of_products( $assoc_args['generate'], $assoc_args );
 			$offset              = $this->offset;
 			$chunkSize           = $this->chunk_size;
-			$chunkCount          = 0;
+			$chunkCount          = 1;
 			$probbablyChunkCount = ceil( $count_for_loaded / $chunkSize );
 			WP_CLI::log( 'Chunk size is set to ' . $chunkSize . ' products.' );
 			WP_CLI::success( 'I found ' . $count_for_loaded . ' products. I will generate ' . $probbablyChunkCount . ' chunks.' );
 
 			do {
-				$products = $this->load_products( $assoc_args['generate'], $offset, $chunkSize );
+				$products = $this->load_products( $assoc_args['generate'], $offset, $chunkSize, $assoc_args );
 				$progress = \WP_CLI\Utils\make_progress_bar( 'Generating XML feed ', count( $products ) );
 				WP_CLI::log( 'Chunk: ' . $chunkCount . ' / ' . $probbablyChunkCount );
 
@@ -139,7 +191,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				wp_reset_postdata();
 				WP_CLI::log( 'Využití paměti: ' . $usage['memory_usage_formatted'] );
 				WP_CLI::log( 'Využití CPU: ' . $usage['cpu_usage_formatted'] );
-			} while ( true );  // Loop will exit when no products are loaded
+			} while ( $chunkCount <= $probbablyChunkCount );
 
 
 			$this->save_data_to_file( $tempFilePath, $this->write()->endDocument() );
@@ -205,12 +257,12 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
 			$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
 			$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-			$data .= $this->write()->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
 			$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
 			$data .= $this->helper()->wpcPriceWriter( $product, $type );
 			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
@@ -245,12 +297,12 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 				$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
 				$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
 				$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-				$data .= $this->write()->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+				$data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
 				$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
 				$data .= $this->helper()->wpcPriceWriter( $product, $type );
 				$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
@@ -279,12 +331,12 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
 			$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
 			$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-			$data .= $this->write()->writeElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+			$data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
 			$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
 			$data .= $this->helper()->wpcPriceWriter( $product, 'simple' );
 			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
@@ -300,7 +352,13 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		}
 
 
-		public function load_products( $generate, $offset, $limit ) {
+		public function load_products( $generate, $offset, $limit, $assoc_argss ) {
+
+			if ( $assoc_argss['limit'] ) {
+				$limit = $assoc_argss['limit'];
+			}
+
+
 			$args = array(
 				'post_type'      => 'product',
 				'offset'         => $offset,
@@ -335,10 +393,17 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			return get_posts( $args );
 		}
 
-		public function get_count_of_products( $generate ) {
+		public function get_count_of_products( $generate, $assoc_args ) {
+
+			if ( $assoc_args['limit'] ) {
+				$limit = $assoc_args['limit'];
+			} else {
+				$limit = '-1';
+			}
+
 			$args = array(
 				'post_type'      => 'product',
-				'posts_per_page' => '-1',
+				'posts_per_page' => $limit,
 				'post_status'    => 'publish',
 				'fields'         => 'ids'
 			);
