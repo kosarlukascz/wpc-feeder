@@ -1,22 +1,40 @@
 <?php
-require_once( 'WPCFeederUtilites.php' );
-require_once( 'WPCFeedStatics.php' );
+require_once 'WPCFeederUtilites.php';
+require_once 'WPCFeedStatics.php';
 
 if ( ! class_exists( 'WPCFeeder' ) ) {
 
 	class WPCFeeder {
 
-		private static $instance; //singleton instance
-		private $prefix = 'WPCFeeder';
+		private static $instance; // singleton instance
+		private $prefix               = 'WPCFeeder';
 		private $reldir_files_uploads = '/wpc-feeder/';
-		private $reldir_chunk_folder = '/wpc-feeder/chunks/';
-		private $chunk_size = 50;
-		private $offset = 0;
+		private $reldir_chunk_folder  = '/wpc-feeder/chunks/';
+        private $tempFilePath;
+		private $chunk_size  = 100;
+        private $chunk_count = 1;
+		private $offset      = 0;
+        private $probbablyChunkCount;
+        private $job_start;
+        private $currency;
+
+        /**
+         * @var string[][] pipes for child processes
+         */
+        private $desc = [
+            0 => [ 'pipe', 'r' ],
+            1 => [ 'pipe', 'w' ],
+            2 => [ 'file', '/tmp/error-output.txt', 'a' ],
+        ];
+
+        /**
+         * @var bool checking if class calls from child process
+         */
+        private $registered = false;
 
 		public static function get_instance() {
 			if ( self::$instance === null ) {
-				self::$instance = new self;
-
+				self::$instance = new self();
 			}
 
 			return self::$instance;
@@ -40,28 +58,35 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 
 		public function __construct() {
 
-			register_activation_hook( __FILE__, array( $this, 'activation' ) );
-			//if defined CLI
-			add_action( 'rest_api_init', array( $this, 'register_routes' ) );
-			if ( defined( 'WP_CLI' ) && WP_CLI ) {
-				WP_CLI::add_command( 'wpc-feeder', array( $this, 'wpcfeeder_main' ) );
-				WP_CLI::add_command( 'wpc-feeder-meta', array( $this, 'wpcfeeder_meta' ) );
+            if ( ! $this->registered ) {
+                register_activation_hook( __FILE__, [ $this, 'activation' ] );
+                // if defined CLI
+                add_action( 'rest_api_init', [ $this, 'register_routes' ] );
 
-			}
+                if ( defined( 'WP_CLI' ) && WP_CLI ) {
+                    WP_CLI::add_command( 'wpc-feeder', [ $this, 'wpcfeeder_main' ] );
+                    WP_CLI::add_command( 'wpc-feeder-meta', [ $this, 'wpcfeeder_meta' ] );
+                }
 
+                $this->registered = true;
+            }
 		}
 
 		public function register_routes() {
-			register_rest_route( '/wpcfeeder/v1', '/check/(?P<id>\d+)', array(
-				'methods'  => 'GET',
-				'callback' => array( $this, 'generate' ),
-			) );
+			register_rest_route(
+                '/wpcfeeder/v1',
+                '/check/(?P<id>\d+)',
+                [
+					'methods'  => 'GET',
+					'callback' => [ $this, 'generate' ],
+                ]
+            );
 		}
 
 		public function generate( $request ) {
 			$id         = $request['id'];
 			$product    = wc_get_product( $id );
-			$assoc_args = array();
+			$assoc_args = [];
 			ob_start();
 			$data = $this->write()->startDocument();
 			if ( $product->is_type( 'variable' ) ) {
@@ -77,12 +102,14 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 
 		public function wpcfeeder_meta( $args, $assoc_args ) {
 			WP_CLI::log( 'Starting to recalculate meta sales' );
-			$products = get_posts( array(
-				'post_type'      => 'product',
-				'post_status'    => 'any',
-				'posts_per_page' => - 1,
-				'fields'         => 'ids',
-			) );
+			$products = get_posts(
+                [
+					'post_type'      => 'product',
+					'post_status'    => 'any',
+					'posts_per_page' => - 1,
+					'fields'         => 'ids',
+				]
+            );
 			WP_CLI::log( 'Found ' . count( $products ) . ' products' );
 			$progress = \WP_CLI\Utils\make_progress_bar( 'Recalculating sales ', count( $products ) );
 			foreach ( $products as $product_id ) {
@@ -113,110 +140,168 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 			if ( $assoc_args['generate'] !== 'one' && $assoc_args['generate'] !== 'zero' && $assoc_args['generate'] !== 'all' ) {
 				WP_CLI::error( 'Please use --generate=one or --generate=zero or --generate=all' );
 			}
-			$this->process_generation( $assoc_args );
+
+            register_shutdown_function( [ $this, 'shutdown_action' ] );
+
+            $this->run_command('wp redis disable');
+            $this->process_generation( $assoc_args );
 		}
 
-		public function process_generation( $assoc_args ) {
-			wp_suspend_cache_addition( true );
+        /**
+         * @return void command to run on shutting down.
+         */
+        public function shutdown_action() {
+            $this->run_command('wp redis enable');
+        }
 
-			$uploadDir = wp_upload_dir();
-			$targetDir = $uploadDir['basedir'] . $this->reldir_files_uploads;
+        /**
+         * Executes command
+         *
+         * @param $command string command to run.
+         * @return void
+         */
+        private function run_command($command) {
+            exec($command, $output, $returnCode);
+            if ($returnCode !== 0) {
+                echo "Error running the command: " . implode("\n", $output);
+            } else {
+                echo "Command executed successfully." . PHP_EOL;
+            }
+        }
 
-			if ( ! file_exists( $targetDir ) ) {
-				wp_mkdir_p( $targetDir );
-				WP_CLI::log( 'Directory ' . $targetDir . ' created.' );
-			}
+        public function process_generation( $assoc_args ) {
+            wp_suspend_cache_addition( true );
+            $uploadDir = wp_upload_dir();
+            $targetDir = $uploadDir['basedir'] . $this->reldir_files_uploads;
 
+            if ( ! file_exists( $targetDir ) ) {
+                wp_mkdir_p( $targetDir );
+                WP_CLI::log( 'Directory ' . $targetDir . ' created.' );
+            }
 
-			$tempFilePath  = $targetDir . $assoc_args['generate'] . '-temp.xml';
-			$finalFilePath = $targetDir . $assoc_args['generate'] . '.xml';
+            $tempFilePath       = $targetDir . $assoc_args['generate'] . '-temp.xml';
+            $finalFilePath      = $targetDir . $assoc_args['generate'] . '.xml';
+            $this->tempFilePath = $tempFilePath;
 
-			if ( file_exists( $tempFilePath ) ) {
-				unlink( $tempFilePath );
-				WP_CLI::log( 'File ' . $tempFilePath . ' deleted.' );
-			}
-			$this->save_data_to_file( $tempFilePath, $this->write()->startDocument(), 'w' );
-			$count_for_loaded    = $this->get_count_of_products( $assoc_args['generate'], $assoc_args );
-			$offset              = $this->offset;
-			$chunkSize           = $this->chunk_size;
-			$chunkCount          = 1;
-			$probbablyChunkCount = ceil( $count_for_loaded / $chunkSize );
-			WP_CLI::log( 'Chunk size is set to ' . $chunkSize . ' products.' );
-			WP_CLI::success( 'I found ' . $count_for_loaded . ' products. I will generate ' . $probbablyChunkCount . ' chunks.' );
+            if ( file_exists( $tempFilePath ) ) {
+                unlink( $tempFilePath );
+                WP_CLI::log( 'File ' . $tempFilePath . ' deleted.' );
+            }
 
-			do {
-				$products = $this->load_products( $assoc_args['generate'], $offset, $chunkSize, $assoc_args );
-				$progress = \WP_CLI\Utils\make_progress_bar( 'Generating XML feed ', count( $products ) );
-				WP_CLI::log( 'Chunk: ' . $chunkCount . ' / ' . $probbablyChunkCount );
+            $data = $this->write()->startDocument();
 
-				if ( empty( $products ) ) {
-					break;
-				}
+            $handle = fopen( $tempFilePath, 'a' );
+            fwrite( $handle, $data );
+            fclose( $handle );
 
-				$data = '';
-				//start messuring time of foreach loop
-				$start = microtime( true );
+            $count_for_loaded          = $this->get_count_of_products( $assoc_args['generate'], $assoc_args );
+            $chunkSize                 = $this->chunk_size;
+            $probbablyChunkCount       = ceil( $count_for_loaded / $this->chunk_size );
+            $this->probbablyChunkCount = $probbablyChunkCount;
+            $this->currency            = get_option( 'woocommerce_currency' );
 
-				foreach ( $products as $product_id ) {
+            WP_CLI::log( 'Chunk size is set to ' . $chunkSize . ' products.' );
+            WP_CLI::success( 'I found ' . $count_for_loaded . ' products. I will generate ' . $probbablyChunkCount . ' chunks.' );
 
-					$product = wc_get_product( $product_id );
-					if ( ! $this->check_product_consistention( $product ) ) {
-						continue;
-					}
+            $this->job_start = microtime( true );
 
+            while ( $this->chunk_count <= $probbablyChunkCount ) {
+                $this->run_job( $assoc_args );
+                $this->offset += $this->chunk_size;
+                $this->chunk_count++;
+            }
 
-					if ( $product->is_type( 'variable' ) ) {
-						$data .= $this->process_variable_product( $product, 'variable', $assoc_args );
-					} else {
-						$data .= $this->process_simple_product( $product, 'simple', $assoc_args );
-					}
+            $data = $this->write()->endDocument();
 
-					$progress->tick();
+            $handle = fopen( $tempFilePath, 'a+' );
+            fwrite( $handle, $data );
+            fclose( $handle );
 
-					$product = '';
-				}
-				//end messuring time of foreach loop
-				$end = microtime( true );
-				WP_CLI::log( 'Chunk generated in ' . round( ( $end - $start ), 2 ) . ' seconds.' );
-				$this->save_data_to_file( $tempFilePath, $data );
-				$data = '';
+            $this->offset = 0;
 
+            if ( file_exists( $finalFilePath ) ) {
+                unlink( $finalFilePath );
+            }
+            rename( $tempFilePath, $finalFilePath );
+            wp_suspend_cache_addition( false );
 
-				$products = '';
-				$progress->finish();
-				$offset += $chunkSize;
-				$chunkCount ++;
+            $this->run_command('wp redis enable');
+            WP_CLI::success( 'XML feed generated.' );
+        }
 
-				$usage = $this->helper()->getSystemUsage();
-				wp_reset_postdata();
-				WP_CLI::log( 'Využití paměti: ' . $usage['memory_usage_formatted'] );
-				WP_CLI::log( 'Využití CPU: ' . $usage['cpu_usage_formatted'] );
-			} while ( $chunkCount <= $probbablyChunkCount );
+        /**
+         * Starts process for current chunk.
+         *
+         * @param $assoc_args
+         * @return void
+         */
+        public function run_job( $assoc_args ) {
 
+            // Executing wpc-process in child process.
+            $cmd     = ( 'php wp-content/plugins/wpc-feeder/includes/wpc-process.php' );
+            $p       = proc_open( $cmd, $this->desc, $pipes );
+            $process = [
+                'process' => $p,
+                'pipes'   => $pipes,
+            ];
 
-			$this->save_data_to_file( $tempFilePath, $this->write()->endDocument() );
+            // Data to send in child process.
+            $data = [
+                'offset'              => $this->offset,
+                'chunk_size'          => $this->chunk_size,
+                'tempFilePath'        => $this->tempFilePath,
+                'probbablyChunkCount' => $this->probbablyChunkCount,
+                'chunk_count'         => $this->chunk_count,
+                'assoc_args'          => $assoc_args,
+                'job_start'           => $this->job_start,
+                'currency'            => $this->currency
+            ];
 
-			if ( file_exists( $finalFilePath ) ) {
-				unlink( $finalFilePath );
-			}
-			rename( $tempFilePath, $finalFilePath );
-			wp_suspend_cache_addition( false );
+            $serializedData = serialize( $data );
 
-			WP_CLI::success( 'XML feed generated.' );
-		}
+            //Sending data.
+            fwrite( $pipes[0], $serializedData . PHP_EOL );
+            fclose( $pipes[0] );
 
+            $process_running = $this->_monitor_process( $process['process'], $process['pipes'] );
+            if ( ! $process_running ) {
+                unset( $processes );
+                print( "\nProcess finished." );
+                print( "\n-------------------\n" );
+            }
+        }
 
-		public function save_data_to_file( $file, $data, $mode = 'a' ) {
-			if ( $handle = fopen( $file, $mode ) ) {
-				// Přidej XML do souboru
-				fwrite( $handle, $data );
-				// Uzavři soubor
-				fclose( $handle );
-				WP_CLI::log( 'Data byla zapsána do XML' );
-			} else {
-				WP_CLI::error( 'Nepodařilo se otevřít soubor XML: ' . $file );
-			}
-		}
+        /**
+         * Prints messages from child process.
+         *
+         * @param $process
+         * @param $pipes
+         * @return mixed
+         */
+        public function _monitor_process( $process, $pipes ) {
+            $status = proc_get_status( $process );
+            while ( $status['running'] ) {
+                foreach ( $pipes as $id => $pipe ) {
+                    if ( $id == 0 ) {
+                        // Don't read from stdin!
+                        continue;
+                    }
+                    $messages = stream_get_contents( $pipe );
+                    if ( ! empty( $messages ) ) {
+                        foreach ( explode( "\n", $messages ) as $message ) {
+                            $message = trim( $message );
+                            if ( ! empty( $message ) ) {
+                                print( " -> $message\n" );
+                            }
+                        }
+                    }
+                }
+                $status = proc_get_status( $process );
+            }
+
+            proc_close( $process );
+            return $status['running'];
+        }
 
 		public function check_product_consistention( $product ) {
 			if ( is_null( $product ) ) {
@@ -240,202 +325,160 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		}
 
 		public function process_variable_product( $product, $type, $assoc_args ) {
-			$data     = '';
-			$parentID = $product->get_id();
-			$data     .= $this->process_variable_product_parent( $product, $parentID, 'variable', $assoc_args );
-			$data     .= $this->process_variable_product_variants( $product, $parentID, $type, $assoc_args );
+            $data     = '';
+            $parentID = $product->get_id();
+            $data    .= $this->process_variable_product_parent( $product, $parentID, 'variable', $assoc_args );
+            $data    .= $this->process_variable_product_variants( $product, $parentID, $type, $assoc_args );
 
-			return $data;
+            return $data;
 		}
 
 		public function process_variable_product_parent( $product, $parentID, $type, $assoc_args ) {
-			$data = '<item>' . PHP_EOL;
 
+            $data  = '<item>' . PHP_EOL;
+            $data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
+            $data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
+            $data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
+            $data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+            $data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
+            $data .= $this->helper()->wpcPriceWriter( $product, $type, $this->write() );
+            $data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
+            $data .= $this->helper()->wpc_get_additional_images( $product, $type, $this->write() );
+            $data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
+            $data .= '</item>' . PHP_EOL;
 
-			$data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-			$data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
-			$data .= $this->helper()->wpcPriceWriter( $product, $type );
-			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-			$data .= $this->helper()->wpc_get_additional_images( $product, $type );
-			$data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
-
-
-			$data      .= '</item>' . PHP_EOL;
-			$variation = '';
-			$product   = '';
-
-			return $data;
+            return $data;
 		}
 
 		public function process_variable_product_variants( $product, $parentID, $type, $assoc_args ) {
-			$data       = '';
-			$variations = $product->get_children( array(
-				'posts_per_page' => - 1,
-				'numberposts'    => - 1,
-			) );
-			foreach ( $variations as $variation ) {
-				$product = wc_get_product( $variation );
+            $products = $product->get_available_variations( 'objects' );
+            $count    = count( $products );
+            $data     = '';
+
+            for ( $i = 0; $i < $count; $i++ ) {
+
+                $product = $products[ $i ];
 				if ( ! $this->check_product_consistention( $product ) ) {
 					continue;
 				}
 
-				$data .= '<item>' . PHP_EOL;
+                $data .= '<item>' . PHP_EOL;
 
-				$data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, 'variant' ) );
-				$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-				$data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
-				$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
-				$data .= $this->helper()->wpcPriceWriter( $product, $type );
-				$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
-				$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-				$data .= $this->helper()->wpc_get_additional_images( $product, $type );
-				$data .= $this->helper()->wpc_get_gender( $product, $type );
-				$data .= ( $color = $this->helper()->wpc_get_color( $product, $type ) ) !== false ? $color : '';
-				$data .= ( $size = $this->helper()->wpc_get_size( $product, $type ) ) !== false ? $size : '';
-				$data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
+                $data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
+                $data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, 'variant' ) );
+                $data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
+                $data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
+                $data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
+                $data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+                $data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+                $data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+                $data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+                $data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+                $data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+                $data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
+                $data .= $this->helper()->wpcPriceWriter( $product, $type );
+                $data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
+                $data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
+                $data .= $this->helper()->wpc_get_additional_images( $product, $type );
+                $data .= $this->helper()->wpc_get_gender( $product, $type );
+                $data .= ( $color = $this->helper()->wpc_get_color( $product, $type ) ) !== false ? $color : '';
+                $data .= ( $size = $this->helper()->wpc_get_size( $product, $type ) ) !== false ? $size : '';
+                $data .= $this->write()->writeElement( 'g:item_group_id', $parentID );
 
-
-				$data      .= '</item>' . PHP_EOL;
-				$variation = '';
-				$product   = '';
+                $data     .= '</item>' . PHP_EOL;
+                $variation = '';
+                $product   = '';
 			}
-			$variations = '';
 
-			return $data;
-		}
+            return $data;
+        }
 
 		public function process_simple_product( $product, $type, $assoc_args ) {
-			$data = '<item>' . PHP_EOL;
+            $data = '<item>' . PHP_EOL;
 
-			$data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
-			$data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
-			$data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
-			$data .= $this->helper()->wpcPriceWriter( $product, 'simple' );
-			$data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
-			$data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
-			$data .= $this->helper()->wpc_get_additional_images( $product, 'simple' );
-			$data .= $this->helper()->wpc_get_gender( $product, 'simple' );
-			$data .= $this->write()->writeElement( 'g:item_group_id', $this->utilites()->wpc_get_item_group_id( $product, $type ) );
+            $data .= $this->write()->writeElement( 'g:id', $this->utilites()->wpc_get_id( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:title', $this->utilites()->wpc_get_name( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:description', $this->utilites()->wpc_get_description( $product, $type ) );
+            $data .= $this->write()->writeElement( 'g:condition', $this->utilites()->wpc_get_condition( $product, $type ) );
+            $data .= $this->write()->writeElement( 'g:brand', $this->utilites()->wpc_get_brand() );
+            $data .= $this->write()->writeCdataElement( 'g:mpn', $this->utilites()->wpc_get_mpn( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_0', $this->utilites()->wpc_get_custom_label_0( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_1', $this->utilites()->wpc_get_custom_label_1( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_2', $this->utilites()->wpc_get_custom_label_2( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_3', $this->utilites()->wpc_get_custom_label_3( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:custom_label_4', $this->utilites()->wpc_get_custom_label_4( $product, $type ) );
+            $data .= $this->write()->writeElement( 'g:availability', $this->utilites()->wpc_get_availability( $product, $type ) );
+            $data .= $this->helper()->wpcPriceWriter( $product, 'simple' );
+            $data .= $this->write()->writeCdataElement( 'g:link', $this->utilites()->wpc_get_link( $product, $type ) );
+            $data .= $this->write()->writeCdataElement( 'g:image_link', $this->utilites()->wpc_get_image_link( $product, $type ) );
+            $data .= $this->helper()->wpc_get_additional_images( $product, 'simple' );
+            $data .= $this->helper()->wpc_get_gender( $product, 'simple' );
+            $data .= $this->write()->writeElement( 'g:item_group_id', $this->utilites()->wpc_get_item_group_id( $product, $type ) );
 
+            $data .= '</item>' . PHP_EOL;
 
-			$data .= '</item>' . PHP_EOL;
-
-			return $data;
+            return $data;
 		}
 
-
-		public function load_products( $generate, $offset, $limit, $assoc_argss ) {
-
-			if ( $assoc_argss['limit'] ) {
-				$limit = $assoc_argss['limit'];
-			}
-
-
-			$args = array(
-				'post_type'      => 'product',
-				'offset'         => $offset,
-				'posts_per_page' => $limit,
-				'post_status'    => 'publish',
-				'fields'         => 'ids'
-			);
-
-			if ( $generate == 'zero' ) {
-				$args['meta_query'] = array(
-					'relation' => 'OR',
-					array(
-						'key'     => 'total_sales',
-						'compare' => 'NOT EXISTS'
-					),
-					array(
-						'key'     => 'total_sales',
-						'value'   => '0',
-						'compare' => '='
-					)
-				);
-			} elseif ( $generate == 'one' ) {
-				$args['meta_query'] = array(
-					array(
-						'key'     => 'total_sales',
-						'value'   => '0',
-						'compare' => '>'
-					)
-				);
-			}
-
-			return get_posts( $args );
-		}
-
+        /**
+         * Getting full count of products to generate
+         *
+         * @param $generate
+         * @param $assoc_args
+         * @return mixed
+         */
 		public function get_count_of_products( $generate, $assoc_args ) {
+            global $wpdb;
 
-			if ( $assoc_args['limit'] ) {
-				$limit = $assoc_args['limit'];
-			} else {
-				$limit = '-1';
-			}
+            $query = "SELECT COUNT(ID)
+              FROM $wpdb->posts
+              WHERE post_type = 'product'
+              AND post_status = 'publish'";
 
-			$args = array(
-				'post_type'      => 'product',
-				'posts_per_page' => $limit,
-				'post_status'    => 'publish',
-				'fields'         => 'ids'
-			);
+            if ( $generate == 'zero' ) {
+                $query .= " AND ( NOT EXISTS (
+                            SELECT MAX(meta_value)
+                            FROM $wpdb->postmeta
+                            WHERE post_id = $wpdb->posts.ID
+                            AND meta_key = 'total_sales'
+                        ) OR (
+                            SELECT MAX(meta_value)
+                            FROM $wpdb->postmeta
+                            WHERE post_id = $wpdb->posts.ID
+                            AND meta_key = 'total_sales'
+                        ) = '0' )";
+            } elseif ( $generate == 'one' ) {
+                $query .= " AND (
+                        SELECT MAX(meta_value)
+                        FROM $wpdb->postmeta
+                        WHERE post_id = $wpdb->posts.ID
+                        AND meta_key = 'total_sales'
+                    ) > '0'";
+            }
 
-			if ( $generate == 'zero' ) {
-				$args['meta_query'] = array(
-					'relation' => 'OR',
-					array(
-						'key'     => 'total_sales',
-						'compare' => 'NOT EXISTS'
-					),
-					array(
-						'key'     => 'total_sales',
-						'value'   => '0',
-						'compare' => '='
-					)
-				);
-			} elseif ( $generate == 'one' ) {
-				$args['meta_query'] = array(
-					array(
-						'key'     => 'total_sales',
-						'value'   => '0',
-						'compare' => '>'
-					)
-				);
-			}
+            if ( array_key_exists( 'limit', $assoc_args ) ) {
+                $limit  = intval( $assoc_args['limit'] );
+                $query .= " LIMIT $limit";
 
-			return count( get_posts( $args ) );
+                $prepared_query = $wpdb->prepare( $query, $limit );
+            } else {
+                $prepared_query = $wpdb->prepare( $query );
+            }
+
+            $count = $wpdb->get_var( $prepared_query );
+
+            return $count;
 		}
 
-		public
-		function create_dir() {
+		public function create_dir() {
 			$upload_dir = ABSPATH . $this->reldir_files;
 			if ( ! file_exists( $upload_dir ) ) {
 				mkdir( $upload_dir, 0777, true );

@@ -2,48 +2,77 @@
 
 if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
-	class WPCWriter {
-		private static $instance; //singleton instance
-		private $prefix = 'WPCWriter';
+    class WPCWriter {
+        private static $instance; // singleton instance
+        private $prefix = 'WPCWriter';
 
-		public static function get_instance() {
-			if ( self::$instance === null ) {
-				self::$instance = new self;
-			}
+        public static function get_instance() {
+            if ( self::$instance === null ) {
+                self::$instance = new self();
+            }
 
-			return self::$instance;
-		}
+            return self::$instance;
+        }
 
-		public function startDocument() {
-			return '<?xml version="1.0" encoding="UTF-8"?>' . PHP_EOL .
-			       '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">' . PHP_EOL .
-			       '<channel>' . PHP_EOL;
-		}
+        public function startDocument() {
+            return '<?xml version="1.0" encoding="UTF-8"?>' . PHP_EOL .
+                '<rss version="2.0" xmlns:g="http://base.google.com/ns/1.0">' . PHP_EOL .
+                '<channel>' . PHP_EOL;
+        }
 
-		public function endDocument() {
-			return '</channel>' . PHP_EOL . '</rss>';
-		}
+        public function endDocument() {
+            return '</channel>' . PHP_EOL . '</rss>';
+        }
 
-		public function writeElement( $name, $data ) {
-			return '<' . $name . '>' . $data . '</' . $name . '>' . PHP_EOL;
-		}
+        public function writeElement( $name, $data ) {
+            return '<' . $name . '>' . $data . '</' . $name . '>' . PHP_EOL;
+        }
 
-		public function writeCdataElement( $name, $data ) {
-			return '<' . $name . '><![CDATA[' . $data . ']]></' . $name . '>' . PHP_EOL;
-		}
-	}
+        public function writeCdataElement( $name, $data ) {
+            return '<' . $name . '><![CDATA[' . $data . ']]></' . $name . '>' . PHP_EOL;
+        }
+    }
 
 	class WPCFeederUtilites {
-		private static $instance; //singleton instance
+		private static $instance; // singleton instance
 		private $prefix = 'WPCFeederUtilites';
+        private $product = [];
 
 		public static function get_instance() {
 			if ( self::$instance === null ) {
-				self::$instance = new self;
+				self::$instance = new self();
 			}
 
 			return self::$instance;
 		}
+
+        public function set_product( $product, $type ) {
+            $id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+            $meta_keys = ['total_sales', 'wpc-feeder-sales-30', 'wpc-feeder-sales-60'];
+            $this->product['product_meta'] = $this->get_meta($meta_keys, $id);
+        }
+
+        private function get_meta($meta_keys, $id) {
+            global $wpdb;
+
+            $meta_keys_string = "'" . implode("', '", $meta_keys) . "'";
+            $query = $wpdb->prepare(
+                "SELECT meta_key, meta_value 
+                 FROM {$wpdb->postmeta} 
+                 WHERE post_id = %d 
+                 AND meta_key IN ({$meta_keys_string})",
+                $id
+            );
+
+            $results = $wpdb->get_results($query);
+            $meta_values = [];
+
+            foreach ($results as $result) {
+                $meta_values[$result->meta_key] = $result->meta_value;
+            }
+
+            return $meta_values;
+        }
 
 		public function wpc_get_name( $product, $type ) {
 
@@ -52,23 +81,25 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 				$name             = $explode[0];
 				$title_attributes = WPCFeederHelper::get_instance()->clean_string( WPCFeederHelper::get_instance()->process_variant_name( $product ) );
 				if ( $title_attributes ) {
+                    unset( $product );
 					return $name .= ' - ' . $title_attributes;
 				} else {
 					$attributes = $product->get_attributes();
-
+                    unset( $product );
 
 					return $name .= ' - ' . WPCFeederHelper::get_instance()->clean_string( str_replace( '-', ' ', implode( ',', $attributes ) ) );
-
 				}
 			} else {
-				return $product->get_name();
+                $name = $product->get_name();
+                unset( $product );
+				return $name;
 			}
 
 		}
 
-
 		public function wpc_get_description( $product, $type ) {
 			$desc = $product->get_description();
+            unset( $product );
 			$desc = strip_tags( html_entity_decode( $desc ) );
 
 			return $desc;
@@ -80,20 +111,21 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
 		public function wpc_get_mpn( $product, $type ) {
 			$mpn = $product->get_id();
-
+            unset( $product );
 			return $mpn;
 		}
 
 		public function wpc_get_custom_label_0( $product, $type ) {
 
-			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+			//$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
 			/**
 			 * Returning number of sales for wholetime
 			 * 0 sale
 			 * 1 sale
 			 * 2 and more sales
 			 */
-			$sales = get_post_meta( $id, 'total_sales', true );
+			//$sales = get_post_meta( $id, 'total_sales', true );
+            $sales = $this->product['product_meta']['total_sales'];
 
 			if ( empty( $sales ) ) {
 				$sales = '0 sales';
@@ -108,7 +140,8 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
 
 		public function wpc_get_custom_label_1( $product, $type ) {
-			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+			//$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+            //unset( $product );
 			/***
 			 * Returning number of sales for last 30 days
 			 * 0
@@ -129,28 +162,12 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			 * 500-1000
 			 * 1000+
 			 */
-			$sales = get_post_meta( $id, 'wpc-feeder-sales-30', true );
-			if ( $sales == 0 ) {
-				return '0';
-			} elseif ( $sales == 1 ) {
-				return '1';
-			} elseif ( $sales == 2 ) {
-				return '2';
-			} elseif ( $sales == 3 ) {
-				return '3';
-			} elseif ( $sales == 5 ) {
-				return '5';
-			} elseif ( $sales == 6 ) {
-				return '6';
-			} elseif ( $sales == 7 ) {
-				return '7';
-			} elseif ( $sales == 8 ) {
-				return '8';
-			} elseif ( $sales == 9 ) {
-				return '9';
-			} elseif ( $sales == 10 ) {
-				return '10';
-			} elseif ( $sales >= 11 && $sales <= 20 ) {
+			//$sales = get_post_meta( $id, 'wpc-feeder-sales-30', true );
+            $sales = $this->product['product_meta']['wpc-feeder-sales-30'];
+
+            if ( $sales < 11 ) {
+                return strval( $sales );
+            } elseif ( $sales >= 11 && $sales <= 20 ) {
 				return '10-20';
 			} elseif ( $sales >= 21 && $sales <= 50 ) {
 				return '20-50';
@@ -170,7 +187,8 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
 		public function wpc_get_custom_label_2( $product, $type ) {
 
-			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+			//$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
+            //unset( $product );
 			/***
 			 * Returning number of sales for last 30 days
 			 * 0
@@ -191,27 +209,11 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			 * 500-1000
 			 * 1000+
 			 */
-			$sales = get_post_meta( $id, 'wpc-feeder-sales-60', true );
-			if ( $sales == 0 ) {
-				return '0';
-			} elseif ( $sales == 1 ) {
-				return '1';
-			} elseif ( $sales == 2 ) {
-				return '2';
-			} elseif ( $sales == 3 ) {
-				return '3';
-			} elseif ( $sales == 5 ) {
-				return '5';
-			} elseif ( $sales == 6 ) {
-				return '6';
-			} elseif ( $sales == 7 ) {
-				return '7';
-			} elseif ( $sales == 8 ) {
-				return '8';
-			} elseif ( $sales == 9 ) {
-				return '9';
-			} elseif ( $sales == 10 ) {
-				return '10';
+			//$sales = get_post_meta( $id, 'wpc-feeder-sales-60', true );
+            $sales = $this->product['product_meta']['wpc-feeder-sales-60'];
+
+            if ( $sales < 11 ) {
+				return strval( $sales );
 			} elseif ( $sales >= 11 && $sales <= 20 ) {
 				return '10-20';
 			} elseif ( $sales >= 21 && $sales <= 50 ) {
@@ -236,7 +238,9 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			 * Returning publishing date of product (mm-yyyy)
 			 */
 
-			return $product->get_date_created()->date( 'm-Y' );
+            $date = $product->get_date_created()->date( 'm-Y' );
+            unset( $product );
+			return $date;
 		}
 
 		public function wpc_get_custom_label_4( $product, $type ) {
@@ -268,7 +272,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			 * <4 year
 			 */
 			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
-
+            unset( $product );
 			return WPCFeederHelper::get_instance()->transform_date_to_label( WPCFeederHelper::get_instance()->get_last_order_date_by_product_id( $id ) );
 
 		}
@@ -294,7 +298,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
 		public function wpc_get_id( $product, $type ) {
 			$id = $product->get_id();
-
+            unset( $product );
 			return $id;
 		}
 
@@ -310,12 +314,12 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 	}
 
 	class WPCWCGetter {
-		private static $instance; //singleton instance
+		private static $instance; // singleton instance
 		private $prefix = 'WPCWCGetter';
 
 		public static function get_instance() {
 			if ( self::$instance === null ) {
-				self::$instance = new self;
+				self::$instance = new self();
 			}
 
 			return self::$instance;
@@ -323,12 +327,12 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 	}
 
 	class WPCFeederHelper {
-		private static $instance; //singleton instance
+		private static $instance; // singleton instance
 		private $prefix = 'WPCFeederHelper';
 
 		public static function get_instance() {
 			if ( self::$instance === null ) {
-				self::$instance = new self;
+				self::$instance = new self();
 			}
 
 			return self::$instance;
@@ -353,13 +357,13 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
 		public function process_string( $input ) {
 			$words           = explode( ' ', $input );
-			$processed_words = array();
+			$processed_words = [];
 			foreach ( $words as $word ) {
 				$original_word = $word;
 				if ( strpos( $word, '-' ) !== false ) {
 					$temp_words = explode( '-', $word );
 
-					$temp_words_edited = array();
+					$temp_words_edited = [];
 					foreach ( $temp_words as $temp_word ) {
 						$temp = str_replace( ',', '', $temp_word );
 
@@ -383,7 +387,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
 		public function transform_date_to_label( $date ) {
 
-			//if date is empty or null
+			// if date is empty or null
 			if ( empty( $date ) || is_null( $date ) ) {
 				return 'never sold';
 			}
@@ -391,7 +395,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			$difference = strtotime( $today ) - strtotime( $date );
 
 			if ( $difference < 60 ) {
-				return "<1 minute";
+				return '<1 minute';
 			} elseif ( $difference < 3600 ) {
 				$minutes = floor( $difference / 60 );
 
@@ -419,26 +423,23 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			}
 		}
 
-
-		public function wpcWriterCdata( $xmlWriter, $name, $data ) {
-			$xmlWriter->startElement( $name );
-			$xmlWriter->writeCData( $data );
-			$xmlWriter->endElement();
-		}
-
 		public function get_sales_for_product_id( $id, $days ) {
 			global $wpdb;
 
-			$query = $wpdb->prepare( "
-        SELECT COUNT(DISTINCT oi.order_item_id) AS pocet_prodeju
-        FROM {$wpdb->posts} AS p
-        JOIN {$wpdb->prefix}woocommerce_order_items AS oi ON p.ID = oi.order_id
-        JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim ON oi.order_item_id = oim.order_item_id
-        WHERE p.post_type = 'shop_order'
-        AND oim.meta_key IN ('_product_id', '_variation_id')
-        AND oim.meta_value = %d
-        AND p.post_date >= DATE_SUB(NOW(), INTERVAL %d DAY)
-    ", $id, $days );
+			$query = $wpdb->prepare(
+                "
+                    SELECT COUNT(DISTINCT oi.order_item_id) AS pocet_prodeju
+                    FROM {$wpdb->posts} AS p
+                    JOIN {$wpdb->prefix}woocommerce_order_items AS oi ON p.ID = oi.order_id
+                    JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim ON oi.order_item_id = oim.order_item_id
+                    WHERE p.post_type = 'shop_order'
+                    AND oim.meta_key IN ('_product_id', '_variation_id')
+                    AND oim.meta_value = %d
+                    AND p.post_date >= DATE_SUB(NOW(), INTERVAL %d DAY)
+                ",
+                $id,
+                $days
+            );
 
 			$result = $wpdb->get_var( $query );
 
@@ -448,37 +449,53 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 		public function get_last_order_date_by_product_id( $id ) {
 			global $wpdb;
 
-			$query = $wpdb->prepare( "
-        SELECT MAX(p.post_date)
-        FROM {$wpdb->prefix}posts p
-        JOIN {$wpdb->prefix}woocommerce_order_items oi ON p.ID = oi.order_id
-        JOIN {$wpdb->prefix}woocommerce_order_itemmeta oim ON oi.order_item_id = oim.order_item_id
-        WHERE p.post_type = 'shop_order'
-        AND oi.order_item_type = 'line_item'
-        AND oim.meta_key = '_product_id'
-        AND oim.meta_value = %d
-    ", $id );
+			$query = $wpdb->prepare(
+                "
+                    SELECT MAX(p.post_date)
+                    FROM {$wpdb->prefix}posts p
+                    JOIN {$wpdb->prefix}woocommerce_order_items oi ON p.ID = oi.order_id
+                    JOIN {$wpdb->prefix}woocommerce_order_itemmeta oim ON oi.order_item_id = oim.order_item_id
+                    WHERE p.post_type = 'shop_order'
+                    AND oi.order_item_type = 'line_item'
+                    AND oim.meta_key = '_product_id'
+                    AND oim.meta_value = %d
+                ",
+                $id
+            );
 
 			return $wpdb->get_var( $query );
 		}
 
+		public function wpcPriceWriter( $product, $type, $writer, $currency = null ) {
 
-		public function wpcPriceWriter( $product, $type ) {
-			$currency_symbol = get_option( 'woocommerce_currency' );
+            $currency_symbol = !is_null($currency) ? $currency : get_option( 'woocommerce_currency' );
 			$data            = '';
-			if ( $type == 'simple' ) {
-				if ( ! empty( $product->get_sale_price() ) ) {
-					$data .= WPCWriter::get_instance()->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price() ) . ' ' . $currency_symbol );
-					$data .= WPCWriter::get_instance()->writeElement( 'g:sale_price', $this->wpc_price_round( $product->get_sale_price() ) . ' ' . $currency_symbol );
+
+			// Get variation price for variable products or regular price for all others.
+			if ( is_a( $product, 'WC_Product_Variable' ) ) {
+
+				$regular_price = $product->get_variation_regular_price();
+				$sale_price = $product->get_variation_sale_price();
+
+				if ( ! empty( $sale_price ) && $sale_price < $regular_price ) {
+					$data .= $writer->writeElement( 'g:price', $this->wpc_price_round( $regular_price, $currency_symbol ) . ' ' . $currency_symbol );
+					$data .= $writer->writeElement( 'g:sale_price', $this->wpc_price_round( $sale_price, $currency_symbol ) . ' ' . $currency_symbol );
 				} else {
-					$data .= WPCWriter::get_instance()->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price() ) . ' ' . $currency_symbol );
+					$data .= $writer->writeElement( 'g:price', $this->wpc_price_round( $regular_price, $currency_symbol ) . ' ' . $currency_symbol );
+				}
+			} else {
+				if ( ! empty( $product->get_sale_price() ) ) {
+					$data .= $writer->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price(), $currency_symbol ) . ' ' . $currency_symbol );
+					$data .= $writer->writeElement( 'g:sale_price', $this->wpc_price_round( $product->get_sale_price(), $currency_symbol ) . ' ' . $currency_symbol );
+				} else {
+					$data .= $writer->writeElement( 'g:price', $this->wpc_price_round( $product->get_regular_price(), $currency_symbol ) . ' ' . $currency_symbol );
 				}
 			}
 
 			return $data;
 		}
 
-		public function wpc_get_gender( $product, $type ) {
+		public function wpc_get_gender( $product, $type, $writer ) {
 			$gender = '';
 			$string = strtolower( $product->get_name() );
 
@@ -499,22 +516,19 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			}
 
 			if ( $gender ) {
-				return WPCWriter::get_instance()->writeElement( 'g:gender', $gender );
+                return $writer->writeElement( 'g:gender', $gender );
 			}
 		}
 
-
 		public function process_variant_name( $product ) {
 			$static     = WPCFeedStatics::get_instance();
-			$to_return  = array();
+			$to_return  = [];
 			$attributes = $product->get_attributes();
-			//COLOR
+			// COLOR
 			$color_keys = $static->possible_attributes_color();
 			foreach ( $attributes as $key => $value ) {
-				if ( preg_match( "/(" . $color_keys . ")/", $key ) ) {
+				if ( preg_match( '/(' . $color_keys . ')/', $key ) ) {
 					{
-
-
 						$to_return[] = $static->color_translate( trim( strtolower( $value ) ) );
 						unset( $attributes[ $key ] );
 					}
@@ -522,10 +536,10 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 				}
 			}
 
-			//SIZE
+			// SIZE
 			$size_keys = $static->possible_attributes_sizes();
 			foreach ( $attributes as $key => $value ) {
-				if ( preg_match( "/(" . $size_keys . ")/", $key ) ) {
+				if ( preg_match( '/(' . $size_keys . ')/', $key ) ) {
 					{
 						$to_return[] = 'velikost ' . strtoupper( $static->size_translate( trim( strtolower( $value ) ) ) );
 						unset( $attributes[ $key ] );
@@ -535,7 +549,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 				}
 			}
 			if ( ! empty( $to_return ) ) {
-				//if is more than 1 element in array
+				// if is more than 1 element in array
 				$all = array_merge( $to_return, $attributes );
 
 				return implode( ', ', $all );
@@ -545,28 +559,29 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			return implode( ', ', $attributes );
 		}
 
-		public function wpc_get_color( $product, $type ) {
+		public function wpc_get_color( $product, $type, $writer ) {
 			$color_keys = WPCFeedStatics::get_instance()->possible_attributes_color();
 			$attributes = $product->get_attributes();
 			foreach ( $attributes as $key => $value ) {
-				if ( preg_match( "/(" . $color_keys . ")/", $key ) ) {
+				if ( preg_match( '/(' . $color_keys . ')/', $key ) ) {
 					{
-						return WPCWriter::get_instance()->writeElement( 'g:color', WPCFeedStatics::get_instance()->color_translate( trim( strtolower( $value ) ) ) );
+                        if ($value) {
+                            return $writer->writeCdataElement( 'g:color', WPCFeedStatics::get_instance()->color_translate( trim( strtolower( $value ) ) ) );
+                        }
 					}
-
 				}
 			}
 
 			return false;
 		}
 
-		public function wpc_get_size( $product, $type ) {
+		public function wpc_get_size( $product, $type, $writer ) {
 			$size_keys  = WPCFeedStatics::get_instance()->possible_attributes_sizes();
 			$attributes = $product->get_attributes();
 			foreach ( $attributes as $key => $value ) {
-				if ( preg_match( "/(" . $size_keys . ")/", $key ) ) {
+				if ( preg_match( '/(' . $size_keys . ')/', $key ) ) {
 					{
-						return WPCWriter::get_instance()->writeElement( 'g:size', strtoupper( WPCFeedStatics::get_instance()->size_translate( trim( strtolower( $value ) ) ) ) );
+                        return $writer->writeCdataElement( 'g:size', strtoupper( WPCFeedStatics::get_instance()->size_translate( trim( strtolower( $value ) ) ) ) );
 					}
 
 				}
@@ -575,7 +590,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			return false;
 		}
 
-		public function wpc_get_additional_images( $product, $type ) {
+		public function wpc_get_additional_images( $product, $type, $writer ) {
 			$limit  = 1;
 			$images = $product->get_gallery_image_ids();
 			$data   = '';
@@ -586,7 +601,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 					}
 					$img_link = wp_get_attachment_image_src( $image, 'full' )[0];
 					if ( $img_link ) {
-						$data .= WPCWriter::get_instance()->writeCdataElement( 'g:additional_image_link', ( $img_link ) );
+                        $data .= $writer->writeCdataElement( 'g:additional_image_link', ( $img_link ) );
 					}
 					$limit ++;
 				}
@@ -596,12 +611,20 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			}
 		}
 
-		public function wpc_price_round( $price ) {
-			if ( get_locale() == 'cs_CZ' ) {
-				return round( $price );
-			} else {
-				return round( $price, 2 );
-			}
+		public function wpc_price_round( $price, $currency ) {
+            switch ($currency) {
+                case 'CZK':
+                case 'HUF':
+                    return round( $price );
+                default:
+                    return round( $price, 2 );
+            }
+
+//			if ( get_locale() == 'cs_CZ' ) {
+//				return round( $price );
+//			} else {
+//				return round( $price, 2 );
+//			}
 		}
 
 		public function getSystemUsage() {
@@ -615,7 +638,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 				'memory_usage'           => $memoryUsage,
 				'memory_usage_formatted' => $memoryUsageFormatted,
 				'cpu_usage'              => $cpuUsage,
-				'cpu_usage_formatted'    => $cpuUsageFormatted
+				'cpu_usage_formatted'    => $cpuUsageFormatted,
 			];
 		}
 
