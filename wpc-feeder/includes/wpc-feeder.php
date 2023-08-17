@@ -12,6 +12,7 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 		private $reldir_chunk_folder  = '/wpc-feeder/chunks/';
         private $tempFilePath;
 		private $chunk_size  = 100;
+        private $meta_chunk_size = 1000;
         private $chunk_count = 1;
 		private $offset      = 0;
         private $probbablyChunkCount;
@@ -110,24 +111,58 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 					'fields'         => 'ids',
 				]
             );
-			WP_CLI::log( 'Found ' . count( $products ) . ' products' );
-			$progress = \WP_CLI\Utils\make_progress_bar( 'Recalculating sales ', count( $products ) );
-			foreach ( $products as $product_id ) {
 
-				if ( $assoc_args['force'] !== 'true' ) {
-					if ( get_post_meta( $product_id, 'wpc-feeder-sales-30', true ) !== '' ) {
-						$progress->tick();
-						continue;
-					}
+            $count = count( $products );
+            $chunks = ceil( $count / $this->meta_chunk_size );
+            $current_chunk = 0;
+
+			WP_CLI::log( 'Found ' . $count . ' products' );
+            WP_CLI::log( 'Found ' . $chunks . ' chunks' );
+			$progress = \WP_CLI\Utils\make_progress_bar( 'Recalculating sales ', $chunks );
+
+            for ( $i = 0; $i<$chunks; $i++ ) {
+                $start = microtime( true );
+
+                $ids = array_slice($products, $this->offset, $this->meta_chunk_size, false);
+
+                $this->offset += $this->meta_chunk_size;
+
+//				if ( $assoc_args['force'] !== 'true' ) {
+//
+//					if ( get_post_meta( $product_id, 'wpc-feeder-sales-30', true ) !== '' ) {
+//						$progress->tick();
+//						continue;
+//					}
+//				}
+                $sales_30 = WPCFeederHelper::get_instance()->get_sales_for_product_id( $ids, 30 );
+                $sales_60 = WPCFeederHelper::get_instance()->get_sales_for_product_id( $ids, 60 );
+
+                foreach ($sales_30 as $item) {
+                    update_post_meta( $item->id, 'wpc-feeder-sales-30', $item->pocet_prodeju );
+                }
+
+                foreach ($sales_60 as $item) {
+                    update_post_meta( $item->id, 'wpc-feeder-sales-60', $item->pocet_prodeju );
+                }
+
+				foreach ($ids as $id) {
+					$val = WPCFeederHelper::get_instance()->get_last_order_date_by_product_id( $id );
+//					WP_CLI::log( $id . ' - ' . $val );
+					update_post_meta( $id, 'wpc-feeder-last-sale', $val );
 				}
 
-				update_post_meta( $product_id, 'wpc-feeder-sales-30', WPCFeederHelper::get_instance()->get_sales_for_product_id( $product_id, 30 ) );
-				update_post_meta( $product_id, 'wpc-feeder-sales-60', WPCFeederHelper::get_instance()->get_sales_for_product_id( $product_id, 60 ) );
 				$progress->tick();
+                $current_chunk++;
+                $end = microtime( true );
+                WP_CLI::log( $current_chunk . '/' . $chunks );
+                WP_CLI::log( round($end - $start) . ' sec' );
 			}
 			$progress->finish();
+            $this->offset = 0;
 			WP_CLI::success( 'Recalculating sales finished' );
-		}
+            set_transient('wpc_feeder_gui', 'ready', 3600);
+
+        }
 
 		public function init() {
 			if ( isset( $_GET['test'] ) ) {
@@ -145,7 +180,10 @@ if ( ! class_exists( 'WPCFeeder' ) ) {
 
             $this->run_command('wp redis disable');
             $this->process_generation( $assoc_args );
-		}
+            set_transient('wpc_feeder_gui', 'ready', 3600);
+            set_transient('wpc_feeder_expected_finish','done', 3600);
+
+        }
 
         /**
          * @return void command to run on shutting down.

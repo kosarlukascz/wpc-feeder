@@ -74,6 +74,7 @@ class WPC_Process {
 
         echo 'Chunk generated in ' . round( ( $end - $start ), 2 ) . ' seconds.' . PHP_EOL;
         echo 'Average time: ' . round( ( $average_time ), 2 ) . ' seconds. / Full time: ' . round( ( $full_time / 60 ), 0 ) . ' min / Expected time to finish: ' . round( ( $expected_finish / 60 ), 0 ) . ' min' . PHP_EOL;
+        set_transient('wpc_feeder_expected_finish',round( ( $expected_finish / 60 ), 0 ), 3600);
 
         $usage = $this->helper()->getSystemUsage();
         echo 'Využití paměti: ' . $usage['memory_usage_formatted'] . PHP_EOL;

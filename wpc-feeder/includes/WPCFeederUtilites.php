@@ -48,7 +48,7 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 
         public function set_product( $product, $type ) {
             $id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
-            $meta_keys = ['total_sales', 'wpc-feeder-sales-30', 'wpc-feeder-sales-60'];
+            $meta_keys = ['total_sales', 'wpc-feeder-sales-30', 'wpc-feeder-sales-60', 'wpc-feeder-last-sale'];
             $this->product['product_meta'] = $this->get_meta($meta_keys, $id);
         }
 
@@ -273,10 +273,11 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			 */
 			$id = ( $type != 'simple' ) ? $product->get_parent_id() : $product->get_id();
             unset( $product );
-			return WPCFeederHelper::get_instance()->transform_date_to_label( WPCFeederHelper::get_instance()->get_last_order_date_by_product_id( $id ) );
 
+            $last_sale = $this->product['product_meta']['wpc-feeder-last-sale'] ?: WPCFeederHelper::get_instance()->get_last_order_date_by_product_id( $id );
+
+			return WPCFeederHelper::get_instance()->transform_date_to_label( $last_sale );
 		}
-
 
 		public function wpc_get_availability( $product, $type ) {
 			return 'in stock';
@@ -423,25 +424,24 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 			}
 		}
 
-		public function get_sales_for_product_id( $id, $days ) {
+		public function get_sales_for_product_id( $ids, $days ) {
 			global $wpdb;
 
-			$query = $wpdb->prepare(
+            $ids_string = implode(',', $ids);
+
+            $query = $wpdb->prepare(
                 "
-                    SELECT COUNT(DISTINCT oi.order_item_id) AS pocet_prodeju
-                    FROM {$wpdb->posts} AS p
-                    JOIN {$wpdb->prefix}woocommerce_order_items AS oi ON p.ID = oi.order_id
-                    JOIN {$wpdb->prefix}woocommerce_order_itemmeta AS oim ON oi.order_item_id = oim.order_item_id
-                    WHERE p.post_type = 'shop_order'
-                    AND oim.meta_key IN ('_product_id', '_variation_id')
-                    AND oim.meta_value = %d
-                    AND p.post_date >= DATE_SUB(NOW(), INTERVAL %d DAY)
-                ",
-                $id,
-                $days
+                    SELECT 
+                        opl.product_id AS id,
+                        COUNT(*) AS pocet_prodeju
+                    FROM {$wpdb->prefix}wc_order_product_lookup opl
+                    WHERE opl.product_id IN ($ids_string)
+                    AND opl.date_created >= DATE_SUB(NOW(), INTERVAL $days DAY)
+                    GROUP BY id
+                "
             );
 
-			$result = $wpdb->get_var( $query );
+            $result = $wpdb->get_results( $query );
 
 			return $result;
 		}
@@ -449,21 +449,17 @@ if ( ! class_exists( 'WPCFeederUtilites' ) ) {
 		public function get_last_order_date_by_product_id( $id ) {
 			global $wpdb;
 
-			$query = $wpdb->prepare(
+            $query = $wpdb->prepare(
                 "
-                    SELECT MAX(p.post_date)
-                    FROM {$wpdb->prefix}posts p
-                    JOIN {$wpdb->prefix}woocommerce_order_items oi ON p.ID = oi.order_id
-                    JOIN {$wpdb->prefix}woocommerce_order_itemmeta oim ON oi.order_item_id = oim.order_item_id
-                    WHERE p.post_type = 'shop_order'
-                    AND oi.order_item_type = 'line_item'
-                    AND oim.meta_key = '_product_id'
-                    AND oim.meta_value = %d
-                ",
-                $id
+                    SELECT MAX(opl.date_created) AS created
+                    FROM {$wpdb->prefix}wc_order_product_lookup opl
+                    WHERE opl.product_id = $id
+                "
             );
 
-			return $wpdb->get_var( $query );
+            $result = $wpdb->get_var( $query );
+
+            return $result;
 		}
 
 		public function wpcPriceWriter( $product, $type, $writer, $currency = null ) {
