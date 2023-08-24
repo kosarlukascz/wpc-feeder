@@ -42,6 +42,14 @@ This command will generate feeds for products that have zero sales.
 wp wpc-feeder --generate=one
 ```
 
+This command will generate product sales for custom labels
+### Generate meta data for custom labels used in feed
+
+```bash
+
+wp wpc-feeder-meta
+```
+
 
 
 This command will generate feeds for products that have more than zero sales.
