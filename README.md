@@ -59,3 +59,7 @@ Contributions are welcome! If you encounter any issues or have suggestions for i
 ## License
 
 This plugin is released under the [GNU General Public License v2 or later](https://www.gnu.org/licenses/gpl-2.0.html) .
+
+
+---
+*This README was written by OpenAI ChatGPT 4o.*
